@@ -5,6 +5,7 @@ function isPlainObject(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 function extractDataList(jsonData, sourceRoot) {
+    const isObjectArray = (arr) => arr.some(item => isPlainObject(item));
     if (!sourceRoot || sourceRoot === 'auto' || sourceRoot === 'data') {
         const keys = [
             'data',
@@ -43,10 +44,12 @@ function extractDataList(jsonData, sourceRoot) {
         ];
         for (const key of keys) {
             if (isPlainObject(jsonData) && Array.isArray(jsonData[key])) {
-                return jsonData[key];
+                const arr = jsonData[key];
+                if (isObjectArray(arr))
+                    return arr;
             }
         }
-        if (Array.isArray(jsonData)) {
+        if (Array.isArray(jsonData) && isObjectArray(jsonData)) {
             return jsonData;
         }
     }
@@ -60,17 +63,20 @@ function extractDataList(jsonData, sourceRoot) {
             }
             cursor = cursor === null || cursor === void 0 ? void 0 : cursor[part];
         }
-        if (Array.isArray(cursor)) {
+        if (Array.isArray(cursor) && isObjectArray(cursor)) {
             return cursor;
         }
     }
     if (isPlainObject(jsonData)) {
         for (const value of Object.values(jsonData)) {
-            if (Array.isArray(value))
+            if (Array.isArray(value) && isObjectArray(value))
                 return value;
         }
     }
-    return Array.isArray(jsonData) ? jsonData : [];
+    if (isPlainObject(jsonData)) {
+        return [jsonData];
+    }
+    return Array.isArray(jsonData) && isObjectArray(jsonData) ? jsonData : [];
 }
 function flattenRecord(obj, prefix = '') {
     const output = {};

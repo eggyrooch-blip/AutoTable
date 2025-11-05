@@ -14,6 +14,12 @@ type Props = {
   tableTargets: Record<string, TableTargetConfig>;
   tableNames: Record<string, string>;
   onTableTargetChange?: (sourceName: string, target: TableTargetConfig) => void;
+  syncFieldsState?: {
+    disabled: boolean;
+    reason?: string;
+    busy?: boolean;
+    onClick?: () => void;
+  };
 };
 
 type TableTargetConfig =
@@ -118,7 +124,20 @@ function shortenFieldName(fullName: string): string {
   return fullName.length > 20 ? fullName.substring(0, 17) + '...' : fullName;
 }
 
-export default function Preview({ tables, activeIndex = 0, onTabChange, warnings, onFieldTypeChange, onFieldLabelChange, onFieldToggle, lang, tableTargets, tableNames, onTableTargetChange }: Props) {
+export default function Preview({
+  tables,
+  activeIndex = 0,
+  onTabChange,
+  warnings,
+  onFieldTypeChange,
+  onFieldLabelChange,
+  onFieldToggle,
+  lang,
+  tableTargets,
+  tableNames,
+  onTableTargetChange,
+  syncFieldsState,
+}: Props) {
   const [query, setQuery] = React.useState('');
   const [onlySuggested, setOnlySuggested] = React.useState(false);
   const [groupingEnabled, setGroupingEnabled] = React.useState(true);
@@ -239,6 +258,35 @@ export default function Preview({ tables, activeIndex = 0, onTabChange, warnings
                   <span className="muted" style={{ fontSize: 12 }}>未选择目标时会自动创建并追踪结构</span>
                 )}
               </div>
+              {/* 字段同步操作 */}
+              {syncFieldsState ? (
+                <div style={{ padding: '0 0.75rem 0.5rem 0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span className="muted" style={{ fontSize: 12, fontWeight: 600 }}>字段同步</span>
+                    {syncFieldsState.disabled && syncFieldsState.reason ? (
+                      <span className="muted" style={{ fontSize: 12 }}>{syncFieldsState.reason}</span>
+                    ) : null}
+                  </div>
+                  <Tooltip
+                    content={syncFieldsState.reason || '同步字段以保持表结构一致'}
+                    disabled={!syncFieldsState.disabled || !syncFieldsState.reason}
+                  >
+                    <span>
+                      <button
+                        className="btn btn-ghost"
+                        style={{ opacity: (syncFieldsState.disabled || syncFieldsState.busy) ? 0.6 : 1 }}
+                        disabled={syncFieldsState.disabled || syncFieldsState.busy}
+                        onClick={() => {
+                          if (syncFieldsState.disabled || syncFieldsState.busy) return;
+                          syncFieldsState.onClick?.();
+                        }}
+                      >
+                        {syncFieldsState.busy ? '同步中…' : '立即同步字段'}
+                      </button>
+                    </span>
+                  </Tooltip>
+                </div>
+              ) : null}
               {/* 搜索、筛选与批量操作 */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0 0.75rem 0.5rem 0.75rem' }}>
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>

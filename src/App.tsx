@@ -147,6 +147,7 @@ export default function App() {
   const [isMockData, setIsMockData] = React.useState(false);
   const [mockNotice, setMockNotice] = React.useState<string | null>(null);
   const [activeMockId, setActiveMockId] = React.useState<string | null>(null);
+  const [recordSummary, setRecordSummary] = React.useState<{ tables: number; records: number }>({ tables: 0, records: 0 });
   const [appendOnlyMode, setAppendOnlyMode] = React.useState(false);
   const [recentLogs, setRecentLogs] = React.useState<string[]>([]);
 
@@ -323,6 +324,41 @@ export default function App() {
     [persist]
   );
 
+  const ensureInitialLabels = React.useCallback((inputTables: any[] = []) => {
+    return (inputTables || []).map(table => {
+      if (!table) return table;
+      const fields = Array.isArray(table.fields) ? table.fields : [];
+      const normalizedFields = fields.map((field: any) => {
+        if (!field) return field;
+        const initialLabelValue =
+          (field as any).__initialLabel ??
+          (field as any)._initialLabel ??
+          (field as any).label ??
+          (field as any).source ??
+          field.name ??
+          '';
+        const normalizedInitial =
+          typeof initialLabelValue === 'string'
+            ? initialLabelValue
+            : String(initialLabelValue ?? '');
+        const currentLabelValue =
+          (field as any).label !== undefined && (field as any).label !== null
+            ? (field as any).label
+            : normalizedInitial;
+        const normalizedLabel =
+          typeof currentLabelValue === 'string'
+            ? currentLabelValue
+            : String(currentLabelValue ?? '');
+        return {
+          ...field,
+          label: normalizedLabel,
+          __initialLabel: normalizedInitial,
+        };
+      });
+      return { ...table, fields: normalizedFields };
+    });
+  }, []);
+
   const pruneFieldMapping = React.useCallback((mapping: FieldMapping, tableSpecs: any[]) => {
     for (const table of tableSpecs) {
       if (!table || !table.name) continue;
@@ -451,7 +487,7 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
 
       const savedTables = await restore<any[]>('tables_state');
       if (Array.isArray(savedTables) && savedTables.length) {
-        setTables(savedTables);
+        setTables(ensureInitialLabels(savedTables));
       }
       const savedText = await restore<string>('last_text');
       if (typeof savedText === 'string') {
@@ -542,7 +578,7 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
       disposeDataChange?.();
       disposeSelection?.();
     };
-  }, [refreshTableNames, restore]);
+  }, [refreshTableNames, restore, ensureInitialLabels]);
 
   function log(line: string) {
     setLogs(prev => [...prev, line]);
@@ -791,16 +827,19 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
         log(`解析完成（${formatToUse.toUpperCase()}）共 ${nextTables.length} 个表`);
       }
 
-      const initIdx = new Array(nextTables.length).fill(0);
-      setTables(nextTables);
+      const normalizedTables = ensureInitialLabels(nextTables);
+      const initIdx = new Array(normalizedTables.length).fill(0);
+      setTables(normalizedTables);
+      const totalRecords = normalizedTables.reduce((sum: number, t: any) => sum + (Array.isArray(t.records) ? t.records.length : 0), 0);
+      setRecordSummary({ tables: normalizedTables.length, records: totalRecords });
       const nextTargets: Record<string, TableTarget> = {};
-      nextTables.forEach((t: any) => {
+      normalizedTables.forEach((t: any) => {
         if (!t?.name) return;
         const prevTarget = tableTargetsRef.current[t.name];
         nextTargets[t.name] = prevTarget ?? { mode: 'auto' };
       });
       await persistTableTargets(nextTargets);
-      await persist('tables_state', nextTables);
+      await persist('tables_state', normalizedTables);
       setActiveTab(0);
       persistUIState({ activeTab: 0 });
       (window as any).__sampleIdx = initIdx;
@@ -1050,8 +1089,9 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
     setTables(prev => {
       const next = prev.map(t => ({ ...t, fields: t.fields.map((f: any) => ({ ...f })) }));
       next[tableIdx].fields[fieldIdx].type = newType;
-      persist('tables_state', next);
-      return next;
+      const normalized = ensureInitialLabels(next);
+      persist('tables_state', normalized);
+      return normalized;
     });
   }
 
@@ -1059,8 +1099,9 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
     setTables(prev => {
       const next = prev.map(t => ({ ...t, fields: t.fields.map((f: any) => ({ ...f })) }));
       next[tableIdx].fields[fieldIdx].label = newLabel;
-      persist('tables_state', next);
-      return next;
+      const normalized = ensureInitialLabels(next);
+      persist('tables_state', normalized);
+      return normalized;
     });
   }
 
@@ -1068,8 +1109,9 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
     setTables(prev => {
       const next = prev.map(t => ({ ...t, fields: t.fields.map((f: any) => ({ ...f })) }));
       next[tableIdx].fields[fieldIdx].__enabled = enabled;
-      persist('tables_state', next);
-      return next;
+      const normalized = ensureInitialLabels(next);
+      persist('tables_state', normalized);
+      return normalized;
     });
   }
 
@@ -1121,6 +1163,7 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
     setInputFormat('auto');
     setAutoDetectedFormat('json');
     persistTableTargets({});
+    setRecordSummary({ tables: 0, records: 0 });
     setRecentLogs([]);
     applyText('', { detectionFormat: 'auto' });
   }, [applyText, isMockData, persistTableTargets]);
@@ -1156,6 +1199,60 @@ const tableScopeLabel = React.useMemo(() => {
       })
       .filter(Boolean) as Array<{ source: string; target: string; mode: 'auto' | 'existing' }>;
   }, [tables, tableTargets]);
+
+  const activeTableIndex = React.useMemo(() => {
+    if (!tables.length) return -1;
+    return Math.min(activeTab, tables.length - 1);
+  }, [tables, activeTab]);
+
+  const syncFieldsAvailability = React.useMemo(() => {
+    const disabledState = (reason: string) => ({ disabled: true, reason });
+    if (activeTableIndex < 0) {
+      return disabledState('暂无解析中的表');
+    }
+    const table = tables[activeTableIndex];
+    if (!table || !table.name) {
+      return disabledState('当前表信息不完整');
+    }
+    const targetConfig = tableTargets[table.name];
+    const targetName =
+      targetConfig?.mode === 'existing' && targetConfig.tableName
+        ? targetConfig.tableName
+        : table.name;
+    const hasLinkedExisting = targetConfig?.mode === 'existing';
+    const hasSchema = targetName ? Boolean(tableSchemas[targetName]) : false;
+    const knownInBase = targetName
+      ? Object.values(tableNames || {}).some(name => name === targetName)
+      : false;
+    const tableReady = hasLinkedExisting || hasSchema || knownInBase;
+    if (!tableReady) {
+      return disabledState('请先创建或关联目标数据表');
+    }
+    const fields = Array.isArray(table.fields) ? table.fields : [];
+    const hasRename = fields.some((field: any) => {
+      if (!field) return false;
+      const initial =
+        ((field as any).__initialLabel ??
+          (field as any)._initialLabel ??
+          (field as any).source ??
+          field.name) ?? '';
+      const current = ((field as any).label ?? field.name) ?? '';
+      return String(current).trim() !== String(initial).trim();
+    });
+    if (!hasRename) {
+      return disabledState('字段未发生改名');
+    }
+    if (syncing) {
+      return disabledState('字段同步进行中');
+    }
+    if (executing) {
+      return disabledState('写入全部任务执行中');
+    }
+    if (undoing) {
+      return disabledState('撤销处理中');
+    }
+    return { disabled: false, reason: '字段名称已调整，可立即同步' };
+  }, [activeTableIndex, tables, tableTargets, tableSchemas, tableNames, syncing, executing, undoing]);
 
   const selectionLabel = React.useMemo(() => {
     if (!selection) return '当前未选中表';
@@ -1255,6 +1352,7 @@ const tableScopeLabel = React.useMemo(() => {
             仅追加模式
           </label>
         </div>
+        <div className="muted" style={{ fontSize: '0.78rem' }}>解析结果：{recordSummary.tables} 张表 / {recordSummary.records} 条记录</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
           {targetSummary.length ? (
             targetSummary.map((item) => (
@@ -1281,9 +1379,6 @@ const tableScopeLabel = React.useMemo(() => {
         <button className="btn btn-ghost" onClick={handleUndo} disabled={executing || syncing || undoing || snapshots.length === 0}>
           {undoing ? '撤销中…' : '撤销上一次变更'}
         </button>
-        <button className="btn btn-ghost" onClick={onSyncFields} disabled={executing || syncing || undoing} title="更新所有表的字段结构；将按下方目标表设置决定是创建新表还是同步到既有表">
-          {syncing ? '同步中…' : '同步字段'}
-        </button>
         <button className="btn btn-primary" onClick={onExecuteWriteAll} disabled={executing || syncing || undoing} title="将解析出的所有记录写入目标表：结构匹配时追加，不匹配时自动新建">
           {executing ? '执行中…' : '写入全部（基于目标表）'}
         </button>
@@ -1302,7 +1397,7 @@ const tableScopeLabel = React.useMemo(() => {
       )}
       <Preview
         tables={tables}
-        activeIndex={Math.min(activeTab, Math.max(0, tables.length - 1))}
+        activeIndex={activeTableIndex >= 0 ? activeTableIndex : 0}
         onTabChange={v => {
           setActiveTab(v);
           persistUIState({ activeTab: v });
@@ -1315,6 +1410,12 @@ const tableScopeLabel = React.useMemo(() => {
         tableTargets={tableTargets}
         tableNames={tableNames}
         onTableTargetChange={handleTableTargetChange}
+        syncFieldsState={{
+          disabled: syncFieldsAvailability.disabled,
+          reason: syncFieldsAvailability.reason,
+          busy: syncing,
+          onClick: onSyncFields,
+        }}
       />
       <LogPane logs={logs} />
     </div>
