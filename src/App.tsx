@@ -165,6 +165,58 @@ export default function App() {
   const [recordSummary, setRecordSummary] = React.useState<{ tables: number; records: number }>({ tables: 0, records: 0 });
   const [autoSyncFieldNames, setAutoSyncFieldNames] = React.useState(false);
   const [fieldWriteScope, setFieldWriteScope] = React.useState<FieldWriteScope>('selected');
+  const [logMode, setLogMode] = React.useState<'latest' | 'history'>('latest');
+  const [logsCollapsed, setLogsCollapsed] = React.useState(false);
+  const [lastHighlight, setLastHighlight] = React.useState<string | null>(null);
+  const [previewCollapsed, setPreviewCollapsed] = React.useState(true);
+  const [previewManualToggle, setPreviewManualToggle] = React.useState(false);
+  const latestLogs = React.useMemo(() => logs.slice(-5), [logs]);
+  const visibleLogs = React.useMemo(
+    () => (logMode === 'latest' ? latestLogs : logs),
+    [logMode, latestLogs, logs]
+  );
+  const StepHeader = ({
+    step,
+    title,
+    hint,
+    action,
+  }: {
+    step: string;
+    title: string;
+    hint?: string;
+    action?: React.ReactNode;
+  }) => (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        gap: '0.75rem',
+        flexWrap: 'wrap',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+        <span
+          style={{
+            fontSize: '0.85rem',
+            fontWeight: 600,
+            letterSpacing: '0.04em',
+            padding: '4px 10px',
+            borderRadius: 999,
+            background: 'rgba(15,23,42,0.08)',
+            color: 'rgba(15,23,42,0.8)',
+          }}
+        >
+          {step}
+        </span>
+        <span style={{ fontSize: '1rem', fontWeight: 600 }}>{title}</span>
+        {hint ? (
+          <span style={{ fontSize: '0.78rem', color: 'rgba(15,23,42,0.65)' }}>{hint}</span>
+        ) : null}
+      </div>
+      {action ? <div>{action}</div> : null}
+    </div>
+  );
 
   const persist = React.useCallback(async (key: string, value: any) => {
     try {
@@ -364,6 +416,7 @@ export default function App() {
     async (value: boolean) => {
       autoSyncFieldNamesRef.current = value;
       setAutoSyncFieldNames(value);
+      if (value) autoSyncReadyRef.current = true;
       await persist('auto_sync_field_names', value);
     },
     [persist]
@@ -457,6 +510,7 @@ export default function App() {
   const tableNamesRef = React.useRef<Record<string, string>>({});
   const tableTargetsRef = React.useRef<Record<string, TableTarget>>({});
   const autoSyncFieldNamesRef = React.useRef<boolean>(autoSyncFieldNames);
+  const autoSyncReadyRef = React.useRef<boolean>(true);
 
   const updateTableNames = React.useCallback((map: Record<string, string>) => {
     tableNamesRef.current = map;
@@ -661,6 +715,9 @@ const takeSnapshot = React.useCallback(
 
   function log(line: string) {
     setLogs(prev => [...prev, line]);
+    if (/(完成|成功|写入|新建|同步|失败)/.test(line)) {
+      setLastHighlight(line);
+    }
   }
 
   const restoreSnapshot = React.useCallback(async (snapshot: Snapshot) => {
@@ -901,9 +958,19 @@ const takeSnapshot = React.useCallback(
         log(`解析完成（${formatToUse.toUpperCase()}）共 ${nextTables.length} 个表`);
       }
 
+      const tablesWithFields = nextTables.filter(
+        (t: any) => Array.isArray(t.fields) && t.fields.some((f: any) => !!f)
+      );
+      if (tablesWithFields.length === 0) {
+        throw new Error('未检测到可写字段，请复制日志反馈给支持人员。');
+      }
+
       const normalizedTables = ensureInitialLabels(nextTables);
       const initIdx = new Array(normalizedTables.length).fill(0);
       setTables(normalizedTables);
+      if (!previewManualToggle) {
+        setPreviewCollapsed(false);
+      }
       const totalRecords = normalizedTables.reduce((sum: number, t: any) => sum + (Array.isArray(t.records) ? t.records.length : 0), 0);
       setRecordSummary({ tables: normalizedTables.length, records: totalRecords });
       const nextTargets: Record<string, TableTarget> = {};
@@ -920,8 +987,10 @@ const takeSnapshot = React.useCallback(
       setBanner({ type: 'success', text: `解析完成，共 ${nextTables.length} 个表` });
       setTimeout(() => setBanner(null), 2500);
     } catch (e: any) {
-      log(`解析失败：${e.message}`);
-      setBanner({ type: 'error', text: `解析失败：${e.message}` });
+      const message = e?.message || String(e);
+      log(`解析失败：${message}`);
+      log('请复制上述日志并反馈给支持人员。');
+      setBanner({ type: 'error', text: `解析失败：${message}` });
     } finally {
       setParsing(false);
     }
@@ -1251,6 +1320,8 @@ async function onSyncFields() {
     persistTableTargets({});
     setRecordSummary({ tables: 0, records: 0 });
     applyText('', { detectionFormat: 'auto' });
+    setPreviewCollapsed(true);
+    setPreviewManualToggle(false);
   }, [applyText, isMockData, persistTableTargets]);
 
   const resolvedTargetNameMap = React.useMemo(() => {
@@ -1391,10 +1462,22 @@ async function onSyncFields() {
 
   React.useEffect(() => {
     if (!autoSyncFieldNamesRef.current) return;
-    if (syncFieldsAvailability.disabled) return;
+    if (syncFieldsAvailability.disabled) {
+      autoSyncReadyRef.current = true;
+      return;
+    }
+    if (!autoSyncReadyRef.current) return;
     if (syncing || executing || undoing) return;
+    autoSyncReadyRef.current = false;
     onSyncFields();
-  }, [autoSyncFieldNames, syncFieldsAvailability.disabled, syncing, executing, undoing]);
+  }, [autoSyncFieldNames, syncFieldsAvailability.disabled, syncing, executing, undoing, onSyncFields]);
+
+  React.useEffect(() => {
+    if (banner?.type === 'success') {
+      setLastHighlight(`${banner.text} · ${new Date().toLocaleTimeString()}`);
+      autoSyncReadyRef.current = true;
+    }
+  }, [banner]);
 
   return (
     <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem', minWidth: 0, width: '100%', boxSizing: 'border-box' }} data-theme={theme}>
@@ -1403,76 +1486,160 @@ async function onSyncFields() {
           {banner.text}
         </div>
       )}
-      <JsonInput
-        value={text}
-        format={inputFormat}
-        detectedFormat={resolvedFormat}
-        onFormatChange={(fmt) => {
-          setInputFormat(fmt);
-          if (fmt === 'auto') {
-            if (text.trim()) {
-              const detected = detectFormat(text);
-              setAutoDetectedFormat(detected);
-              if (detected === 'json') {
-                try {
-                  JSON.parse(text);
+      <section style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+        <StepHeader step="01" title="数据输入" hint="粘贴原始数据或导入文件后解析。" />
+        <div className="card" style={{ padding: '0.85rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          <JsonInput
+            value={text}
+            format={inputFormat}
+            detectedFormat={resolvedFormat}
+            onFormatChange={(fmt) => {
+              setInputFormat(fmt);
+              if (fmt === 'auto') {
+                if (text.trim()) {
+                  const detected = detectFormat(text);
+                  setAutoDetectedFormat(detected);
+                  if (detected === 'json') {
+                    try {
+                      JSON.parse(text);
+                      setJsonHint(undefined);
+                    } catch (err: any) {
+                      setJsonHint(`格式可能有误（将尝试宽松模式解析）：${err.message}`);
+                    }
+                  } else if (detected === 'xml') {
+                    setJsonHint('检测到 XML 数据，当前版本暂不支持解析，请转换为 JSON/YAML/TSV/日志 格式。');
+                  } else {
+                    setJsonHint(undefined);
+                  }
+                } else {
+                  setAutoDetectedFormat('json');
                   setJsonHint(undefined);
-                } catch (err: any) {
-                  setJsonHint(`格式可能有误（将尝试宽松模式解析）：${err.message}`);
                 }
-              } else if (detected === 'xml') {
-                setJsonHint('检测到 XML 数据，当前版本暂不支持解析，请转换为 JSON/YAML/TSV/日志 格式。');
               } else {
-                setJsonHint(undefined);
+                setAutoDetectedFormat(fmt);
+                if (fmt === 'json') {
+                  try {
+                    if (text.trim()) JSON.parse(text);
+                    setJsonHint(undefined);
+                  } catch (err: any) {
+                    setJsonHint(`格式可能有误（将尝试宽松模式解析）：${err.message}`);
+                  }
+                } else if (fmt === 'xml') {
+                  setJsonHint('检测到 XML 数据，当前版本暂不支持解析，请转换为 JSON/YAML/TSV/日志 格式。');
+                } else {
+                  setJsonHint(undefined);
+                }
               }
-            } else {
-              setAutoDetectedFormat('json');
-              setJsonHint(undefined);
-            }
-          } else {
-            setAutoDetectedFormat(fmt);
-            if (fmt === 'json') {
-              try {
-                if (text.trim()) JSON.parse(text);
-                setJsonHint(undefined);
-              } catch (err: any) {
-                setJsonHint(`格式可能有误（将尝试宽松模式解析）：${err.message}`);
+            }}
+            onChange={v => {
+              if (isMockData) {
+                setIsMockData(false);
+                setMockNotice(null);
+                setActiveMockId(null);
               }
-            } else if (fmt === 'xml') {
-              setJsonHint('检测到 XML 数据，当前版本暂不支持解析，请转换为 JSON/YAML/TSV/日志 格式。');
-            } else {
-              setJsonHint(undefined);
-            }
+              applyText(v);
+            }}
+            onParse={onParse}
+            parseLoading={parsing}
+            error={jsonHint}
+            onClear={handleClearInput}
+            isMockData={isMockData}
+            mockInfo={mockNotice}
+            onRandomMock={handleRandomMock}
+          />
+          <div style={{ fontSize: '0.75rem', color: 'rgba(15,23,42,0.6)' }}>
+            {recordSummary.tables > 0
+              ? `已解析：${recordSummary.tables} 张表 / ${recordSummary.records} 条记录`
+              : '粘贴数据后点击“解析数据”开始。'}
+          </div>
+        </div>
+      </section>
+
+      <section style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+        <StepHeader
+          step="02"
+          title="结构预览"
+          hint="核对字段、类型与样本记录。"
+          action={
+            tables.length > 0 ? (
+              <button
+                className="btn btn-ghost"
+                style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+                onClick={() => {
+                  setPreviewManualToggle(true);
+                  setPreviewCollapsed(prev => !prev);
+                }}
+              >
+                {previewCollapsed ? '展开预览' : '收起预览'}
+              </button>
+            ) : null
           }
-        }}
-        onChange={v => {
-          if (isMockData) {
-            setIsMockData(false);
-            setMockNotice(null);
-            setActiveMockId(null);
-          }
-          applyText(v);
-        }}
-        onParse={onParse}
-        parseLoading={parsing}
-        error={jsonHint}
-        onClear={handleClearInput}
-        isMockData={isMockData}
-        mockInfo={mockNotice}
-        onRandomMock={handleRandomMock}
-      />
-      <div className="card" style={{ padding: '0.95rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', alignItems: 'baseline', gap: '0.5rem' }}>
-          <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>执行任务</span>
-          <span className="muted" style={{ fontSize: '0.78rem' }}>解析结果：{recordSummary.tables} 张表 / {recordSummary.records} 条记录</span>
+        />
+        <div className="card" style={{ padding: '0.85rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          {previewCollapsed ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', color: 'rgba(15,23,42,0.7)', fontSize: '0.78rem' }}>
+              <div>
+                解析结果：{recordSummary.tables} 张表 / {recordSummary.records} 条记录
+              </div>
+              {tables.length > 0 ? (
+                <div>
+                  涉及表：
+                  {tables
+                    .map((t: any) => t?.name)
+                    .filter(Boolean)
+                    .slice(0, 3)
+                    .join('、')}
+                  {tables.length > 3 ? ` 等 ${tables.length} 张表` : ''}
+                </div>
+              ) : (
+                <div>暂无解析数据。</div>
+              )}
+              <div style={{ fontSize: '0.76rem', color: 'rgba(15,23,42,0.55)' }}>
+                点击“展开预览”查看字段列表与示例值。
+              </div>
+            </div>
+          ) : (
+            <Preview
+              tables={tables}
+              activeIndex={activeTableIndex >= 0 ? activeTableIndex : 0}
+              onTabChange={v => {
+                setActiveTab(v);
+                persistUIState({ activeTab: v });
+              }}
+              warnings={warnings}
+              onFieldTypeChange={handleFieldTypeChange}
+              onFieldLabelChange={handleFieldLabelChange}
+              onFieldToggle={handleFieldToggle}
+              lang={lang}
+              autoSyncFieldNames={autoSyncFieldNames}
+              onAutoSyncToggle={persistAutoSyncFieldNames}
+            />
+          )}
         </div>
-        <div className="muted" style={{ fontSize: '0.78rem', lineHeight: 1.5 }}>
-          操作范围：{tableScopeLabel}。执行前会自动生成快照，可使用“撤销上一次变更”恢复{lastSnapshotTime ? `（最近快照：${lastSnapshotTime}）` : ''}。
-        </div>
-        <div className="muted" style={{ fontSize: '0.78rem', lineHeight: 1.5 }}>
-          1. 为每个源表选择目标数据表；默认“自动创建”会生成新表。2. 如需重命名字段，请在下方预览区调整后使用本面板中的“同步字段名称”按钮。3. 准备就绪后点击“写入全部”完成批量导入。
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+      </section>
+
+      <section style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+        <StepHeader step="03" title="执行任务" hint="选择目标表与字段范围后同步或写入。" />
+        <div className="card" style={{ padding: '0.95rem 1.1rem', display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', alignItems: 'baseline', gap: '0.6rem' }}>
+            <span className="muted" style={{ fontSize: '0.78rem' }}>操作范围：{tableScopeLabel}</span>
+            {lastSnapshotTime ? (
+              <span className="muted" style={{ fontSize: '0.72rem' }}>最近快照：{lastSnapshotTime}</span>
+            ) : null}
+            <span
+              style={{
+                padding: '2px 6px',
+                borderRadius: 6,
+                background: 'rgba(37, 99, 235, 0.12)',
+                border: '1px solid rgba(37, 99, 235, 0.2)',
+                fontSize: '0.72rem',
+                color: '#2563eb',
+              }}
+              title="同步或写入前会生成快照，可随时撤销。"
+            >
+              自动快照
+            </span>
+          </div>
           {tables.length ? (
             tables.map((t: any, idx: number) => {
               if (!t?.name) return null;
@@ -1491,8 +1658,8 @@ async function onSyncFields() {
                     alignItems: 'center',
                     gap: '0.5rem',
                     flexWrap: 'wrap',
-                    padding: '0.4rem 0',
-                    borderBottom: idx === tables.length - 1 ? 'none' : '1px solid rgba(0,0,0,0.05)',
+                    padding: '0.35rem 0',
+                    borderBottom: idx === tables.length - 1 ? 'none' : '1px solid rgba(15,23,42,0.06)',
                   }}
                 >
                   <span style={{ fontWeight: 600, fontSize: '0.85rem', minWidth: 140 }}>{t.name || `表${idx + 1}`}</span>
@@ -1509,6 +1676,7 @@ async function onSyncFields() {
                       }
                     }}
                     style={{ width: '220px', maxWidth: '100%' }}
+                    title="目标数据表：默认自动创建，也可绑定既有表。"
                   >
                     <option value="auto">自动创建新表（默认）</option>
                     {tableOptionEntries.map(([id, name]) => (
@@ -1516,9 +1684,7 @@ async function onSyncFields() {
                     ))}
                   </select>
                   <span className="muted" style={{ fontSize: '0.75rem' }}>
-                    {targetConfig.mode === 'existing'
-                      ? `写入目标：${targetLabel}`
-                      : `将新建：${targetLabel}`}
+                    {targetConfig.mode === 'existing' ? `写入：${targetLabel}` : `新建：${targetLabel}`}
                   </span>
                 </div>
               );
@@ -1526,9 +1692,6 @@ async function onSyncFields() {
           ) : (
             <span className="muted" style={{ fontSize: '0.78rem' }}>暂无解析中的表，请先解析数据或选择示例。</span>
           )}
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-          <span className="muted" style={{ fontSize: '0.78rem' }}>字段范围：</span>
           <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
             <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', cursor: 'pointer' }}>
               <input
@@ -1550,79 +1713,88 @@ async function onSyncFields() {
               />
               所有字段
             </label>
+            <span className="muted" style={{ fontSize: '0.72rem' }} title="仅勾选字段：按照字段面板勾选项写入；所有字段：忽略勾选状态写入全部字段。">
+              字段范围
+            </span>
           </div>
-          <span className="muted" style={{ fontSize: '0.75rem' }}>
-            勾选模式仅写入已启用字段；选择“所有字段”会忽略字段勾选状态，将所有解析字段一并写入。
-          </span>
-        </div>
-        {targetSummary.length ? (
-          <div className="muted" style={{ fontSize: '0.75rem', display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
-            {targetSummary.map((item) => (
-              <span
-                key={`${item.source}-${item.target}`}
-                style={{
-                  padding: '4px 8px',
-                  borderRadius: 6,
-                  background: item.mode === 'existing' ? 'rgba(22,119,255,0.12)' : 'rgba(82,196,26,0.12)',
-                  border: item.mode === 'existing' ? '1px solid rgba(22,119,255,0.2)' : '1px solid rgba(82,196,26,0.25)',
-                }}
-              >
-                {item.source} → {item.target}{item.mode === 'auto' ? '（待创建）' : ''}
-              </span>
-            ))}
+          {targetSummary.length ? (
+            <div className="muted" style={{ fontSize: '0.75rem', display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+              {targetSummary.map((item) => (
+                <span
+                  key={`${item.source}-${item.target}`}
+                  style={{
+                    padding: '4px 8px',
+                    borderRadius: 6,
+                    background: item.mode === 'existing' ? 'rgba(22,119,255,0.12)' : 'rgba(82,196,26,0.12)',
+                    border: item.mode === 'existing' ? '1px solid rgba(22,119,255,0.2)' : '1px solid rgba(82,196,26,0.25)',
+                  }}
+                >
+                  {item.source} → {item.target}{item.mode === 'auto' ? '（待创建）' : ''}
+                </span>
+              ))}
+            </div>
+          ) : null}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem', alignItems: 'center' }}>
+            <button
+              className="btn btn-primary"
+              style={{ minWidth: '200px' }}
+              onClick={onExecuteWriteAll}
+              disabled={executing || syncing || undoing}
+              title="写入当前解析出的所有记录：自动模式将生成新表，已绑定目标则追加记录。"
+            >
+              {executing ? '执行中…' : '写入全部'}
+            </button>
+            <button
+              className="btn"
+              onClick={onSyncFields}
+              disabled={syncFieldsAvailability.disabled || syncing || executing || undoing}
+              title={syncFieldsAvailability.disabled ? (syncFieldsAvailability.reason || '字段名称未准备就绪') : '同步字段名称以保持目标表字段标题一致'}
+            >
+              {syncing ? '同步中…' : '同步字段名称'}
+            </button>
+            <button
+              className="btn btn-ghost"
+              onClick={handleUndo}
+              disabled={executing || syncing || undoing || snapshots.length === 0}
+              title="撤销最近一次写入或字段同步操作"
+            >
+              {undoing ? '撤销中…' : '撤销上一次变更'}
+            </button>
           </div>
-        ) : null}
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem', alignItems: 'center' }}>
-          <button
-            className="btn btn-primary"
-            style={{ minWidth: '200px' }}
-            onClick={onExecuteWriteAll}
-            disabled={executing || syncing || undoing}
-            title="写入当前解析出的所有记录：自动模式将生成新表，已绑定目标则追加记录。"
-          >
-            {executing ? '执行中…' : '写入全部'}
-          </button>
-          <button
-            className="btn"
-            onClick={onSyncFields}
-            disabled={syncFieldsAvailability.disabled || syncing || executing || undoing}
-            title={syncFieldsAvailability.disabled ? (syncFieldsAvailability.reason || '字段名称未准备就绪') : '同步字段名称以保持目标表字段标题一致'}
-          >
-            {syncing ? '同步中…' : '同步字段名称'}
-          </button>
-          <button
-            className="btn btn-ghost"
-            onClick={handleUndo}
-            disabled={executing || syncing || undoing || snapshots.length === 0}
-            title="撤销最近一次写入或字段同步操作"
-          >
-            {undoing ? '撤销中…' : '撤销上一次变更'}
-          </button>
+          {syncFieldsAvailability.disabled && syncFieldsAvailability.reason ? (
+            <span className="muted" style={{ fontSize: '0.75rem' }}>{syncFieldsAvailability.reason}</span>
+          ) : null}
         </div>
-        {syncFieldsAvailability.disabled && syncFieldsAvailability.reason ? (
-          <span className="muted" style={{ fontSize: '0.75rem' }}>{syncFieldsAvailability.reason}</span>
-        ) : null}
-      </div>
+      </section>
+
+      <section style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+        <StepHeader step="04" title="任务反馈" hint="查看最新结果与历史日志。" />
+        <div
+          className="card"
+          style={{
+            padding: '0.85rem 1rem',
+            background: 'linear-gradient(180deg, #ffffff 0%, #f8fbff 100%)',
+            border: '1px solid rgba(15,23,42,0.06)',
+          }}
+        >
+          <LogPane
+            logs={visibleLogs}
+            mode={logMode}
+            onModeChange={setLogMode}
+            collapsed={logsCollapsed}
+            onToggleCollapse={() => setLogsCollapsed(prev => !prev)}
+            highlight={lastHighlight}
+            totalCount={logs.length}
+            latestCount={latestLogs.length}
+          />
+        </div>
+      </section>
+
       <div className="muted" style={{ fontSize: '0.8rem' }}>{selectionLabel}</div>
       {lastDataChangeAt && (
         <div className="muted" style={{ fontSize: '0.8rem' }}>最近数据更新：{new Date(lastDataChangeAt).toLocaleTimeString()}</div>
       )}
-      <Preview
-        tables={tables}
-        activeIndex={activeTableIndex >= 0 ? activeTableIndex : 0}
-        onTabChange={v => {
-          setActiveTab(v);
-          persistUIState({ activeTab: v });
-        }}
-        warnings={warnings}
-        onFieldTypeChange={handleFieldTypeChange}
-        onFieldLabelChange={handleFieldLabelChange}
-        onFieldToggle={handleFieldToggle}
-        lang={lang}
-        autoSyncFieldNames={autoSyncFieldNames}
-        onAutoSyncToggle={persistAutoSyncFieldNames}
-      />
-      <LogPane logs={logs} />
     </div>
   );
+
 }

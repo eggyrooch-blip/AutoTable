@@ -186,6 +186,9 @@ export default function Preview({
         </div>
       ) : tables.map((t, idx) => {
         if (idx !== activeIndex) return null;
+        const totalFields = Array.isArray(t.fields) ? t.fields.length : 0;
+        const enabledFields = (t.fields || []).filter((f: any) => (f as any)?.__enabled !== false).length;
+        const sampleCount = Array.isArray(t.records) ? t.records.length : 0;
         return (
         <div key={idx} className="card" style={{ overflow: 'hidden' }}>
           {/* 去掉单独的数据表标题行，只保留表格主体 */}
@@ -212,6 +215,20 @@ export default function Preview({
                   ))}
                 </div>
               )}
+              <div
+                style={{
+                  padding: '0 0.75rem 0.45rem 0.75rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '1rem',
+                  flexWrap: 'wrap',
+                  fontSize: 12,
+                  color: 'rgba(15,23,42,0.68)',
+                }}
+              >
+                <span>字段：{enabledFields}/{totalFields}</span>
+                <span title="解析样本记录数，仅用于类型推断">{`样本记录：${sampleCount}`}</span>
+              </div>
               <div style={{ padding: '0 0.75rem 0.5rem 0.75rem', display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                 <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, cursor: 'pointer' }}>
                   <input
