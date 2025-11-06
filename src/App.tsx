@@ -64,6 +64,7 @@ type TableTarget =
   | { mode: 'existing'; tableId: string; tableName: string };
 
 type ResolvedTableSpec = TableSpec & { __sourceName: string };
+type FieldWriteScope = 'selected' | 'all';
 
 function isRecord(value: any): value is Record<string, any> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
@@ -104,6 +105,20 @@ function normalizeEmbeddedJson(value: any, depth = 0): any {
     }
   }
   return value;
+}
+
+function ensureUniqueTableName(baseName: string, usedNames: Set<string>): string {
+  const normalized = baseName && baseName.trim().length ? baseName.trim() : 'auto_table';
+  if (!usedNames.has(normalized)) {
+    return normalized;
+  }
+  let counter = 2;
+  let candidate = `${normalized}_auto${counter}`;
+  while (usedNames.has(candidate)) {
+    counter += 1;
+    candidate = `${normalized}_auto${counter}`;
+  }
+  return candidate;
 }
 
 type ApplyTextOptions = {
@@ -148,8 +163,8 @@ export default function App() {
   const [mockNotice, setMockNotice] = React.useState<string | null>(null);
   const [activeMockId, setActiveMockId] = React.useState<string | null>(null);
   const [recordSummary, setRecordSummary] = React.useState<{ tables: number; records: number }>({ tables: 0, records: 0 });
-  const [appendOnlyMode, setAppendOnlyMode] = React.useState(false);
-  const [recentLogs, setRecentLogs] = React.useState<string[]>([]);
+  const [autoSyncFieldNames, setAutoSyncFieldNames] = React.useState(false);
+  const [fieldWriteScope, setFieldWriteScope] = React.useState<FieldWriteScope>('selected');
 
   const persist = React.useCallback(async (key: string, value: any) => {
     try {
@@ -286,17 +301,47 @@ export default function App() {
     [tableSchemas, computeTableSchema, persistTableSchemas]
   );
 
-  const resolveTablesForPipeline = React.useCallback((): ResolvedTableSpec[] => {
-    return tables.map((spec: any) => {
-      const target = tableTargetsRef.current[spec.name] ?? tableTargets[spec.name];
-      const effectiveName = target?.mode === 'existing' && target.tableName ? target.tableName : spec.name;
-      return {
-        ...spec,
-        name: effectiveName,
-        __sourceName: spec.name,
-      } as ResolvedTableSpec;
-    });
-  }, [tables, tableTargets]);
+  const resolveTablesForPipeline = React.useCallback(
+    (options: { includeDisabled?: boolean } = {}): ResolvedTableSpec[] => {
+      const includeDisabled = options.includeDisabled ?? false;
+      const usedNames = new Set<string>();
+      Object.values(tableNamesRef.current || {}).forEach(name => {
+        if (typeof name === 'string' && name) usedNames.add(name);
+      });
+      const resolved: ResolvedTableSpec[] = [];
+      for (const spec of tables) {
+        if (!spec || !spec.name) continue;
+        const sourceName = spec.name;
+        const target = tableTargetsRef.current[sourceName] ?? tableTargets[sourceName];
+        let effectiveName: string;
+        if (target?.mode === 'existing' && target.tableName) {
+          effectiveName = target.tableName;
+        } else {
+          effectiveName = sourceName;
+          if (usedNames.has(effectiveName)) {
+            effectiveName = ensureUniqueTableName(effectiveName, usedNames);
+          }
+        }
+        usedNames.add(effectiveName);
+        const rawFields = Array.isArray(spec.fields) ? spec.fields : [];
+        const clonedFields = rawFields.map((field: any) => {
+          const clone: any = { ...field };
+          if (includeDisabled && clone && clone.__enabled === false) {
+            delete clone.__enabled;
+          }
+          return clone;
+        });
+        resolved.push({
+          ...spec,
+          fields: clonedFields,
+          name: effectiveName,
+          __sourceName: sourceName,
+        });
+      }
+      return resolved;
+    },
+    [tables, tableTargets]
+  );
 
   const persistFieldMappings = React.useCallback(
     async (next: FieldMapping) => {
@@ -315,11 +360,19 @@ export default function App() {
     [persist]
   );
 
-  const persistAppendOnlyMode = React.useCallback(
+  const persistAutoSyncFieldNames = React.useCallback(
     async (value: boolean) => {
-      appendOnlyRef.current = value;
-      setAppendOnlyMode(value);
-      await persist('append_only_mode', value);
+      autoSyncFieldNamesRef.current = value;
+      setAutoSyncFieldNames(value);
+      await persist('auto_sync_field_names', value);
+    },
+    [persist]
+  );
+
+  const persistFieldWriteScope = React.useCallback(
+    async (value: FieldWriteScope) => {
+      setFieldWriteScope(value);
+      await persist('field_write_scope', value);
     },
     [persist]
   );
@@ -359,6 +412,26 @@ export default function App() {
     });
   }, []);
 
+  const rebaseSyncedLabels = React.useCallback((inputTables: any[] = []) => {
+    const rebased = (inputTables || []).map(table => {
+      if (!table) return table;
+      const fields = Array.isArray(table.fields) ? table.fields : [];
+      const nextFields = fields.map((field: any) => {
+        if (!field) return field;
+        const currentLabelValue = ((field as any).label ?? field.name) ?? '';
+        const normalizedLabel =
+          typeof currentLabelValue === 'string' ? currentLabelValue : String(currentLabelValue ?? '');
+        return {
+          ...field,
+          __initialLabel: normalizedLabel,
+        };
+      });
+      return { ...table, fields: nextFields };
+    });
+    return ensureInitialLabels(rebased);
+  }, [ensureInitialLabels]);
+
+
   const pruneFieldMapping = React.useCallback((mapping: FieldMapping, tableSpecs: any[]) => {
     for (const table of tableSpecs) {
       if (!table || !table.name) continue;
@@ -383,7 +456,7 @@ export default function App() {
 
   const tableNamesRef = React.useRef<Record<string, string>>({});
   const tableTargetsRef = React.useRef<Record<string, TableTarget>>({});
-  const appendOnlyRef = React.useRef<boolean>(appendOnlyMode);
+  const autoSyncFieldNamesRef = React.useRef<boolean>(autoSyncFieldNames);
 
   const updateTableNames = React.useCallback((map: Record<string, string>) => {
     tableNamesRef.current = map;
@@ -405,53 +478,55 @@ const refreshTableNames = React.useCallback(async () => {
   }
 }, [updateTableNames]);
 
-const takeSnapshot = React.useCallback(async (description: string): Promise<Snapshot> => {
-  const snapshotTables: TableSnapshot[] = [];
-  for (const spec of tables) {
-    const sourceName = spec?.name;
-    if (!sourceName) continue;
-    const targetConfig = tableTargetsRef.current[sourceName] ?? tableTargets[sourceName];
-    const tableName = targetConfig?.mode === 'existing' && targetConfig.tableName ? targetConfig.tableName : sourceName;
-    let existed = false;
-    let tableId: string | undefined;
-    let fields: FieldMetaSnapshot[] = [];
-    try {
-      const table = await getTableByName(tableName);
-      existed = true;
+const takeSnapshot = React.useCallback(
+  async (description: string, resolvedTablesOverride?: ResolvedTableSpec[]): Promise<Snapshot> => {
+    const targetSpecs = resolvedTablesOverride ?? resolveTablesForPipeline();
+    const snapshotTables: TableSnapshot[] = [];
+    for (const spec of targetSpecs) {
+      if (!spec || !spec.name) continue;
+      const tableName = spec.name;
+      let existed = false;
+      let tableId: string | undefined;
+      let fields: FieldMetaSnapshot[] = [];
       try {
-        const meta = await table.getMeta?.();
-        if (meta?.id) tableId = meta.id;
-      } catch {}
-      const metas = await table.getFieldMetaList();
-      const tableMapping = fieldMappings[tableName] || {};
-      fields = metas.map((m: any) => ({
-        id: m.id,
-        name: m.name,
-        type: m.type,
-        property: m.property,
-        mappingKeys: Object.entries(tableMapping)
-          .filter(([, mappedId]) => mappedId === m.id)
-          .map(([key]) => key),
-      }));
-    } catch {
-      existed = false;
+        const table = await getTableByName(tableName);
+        existed = true;
+        try {
+          const meta = await table.getMeta?.();
+          if (meta?.id) tableId = meta.id;
+        } catch {}
+        const metas = await table.getFieldMetaList();
+        const tableMapping = fieldMappings[tableName] || {};
+        fields = metas.map((m: any) => ({
+          id: m.id,
+          name: m.name,
+          type: m.type,
+          property: m.property,
+          mappingKeys: Object.entries(tableMapping)
+            .filter(([, mappedId]) => mappedId === m.id)
+            .map(([key]) => key),
+        }));
+      } catch {
+        existed = false;
+      }
+      snapshotTables.push({
+        tableName,
+        tableId,
+        existed,
+        fields,
+        insertedRecordIds: [],
+      });
     }
-    snapshotTables.push({
-      tableName,
-      tableId,
-      existed,
-      fields,
-      insertedRecordIds: [],
-    });
-  }
-  return {
-    timestamp: Date.now(),
-    description,
-    tables: snapshotTables,
-    createdTables: [],
-    fieldMapping: cloneFieldMapping(fieldMappings),
-  };
-}, [tables, tableTargets, cloneFieldMapping, fieldMappings]);
+    return {
+      timestamp: Date.now(),
+      description,
+      tables: snapshotTables,
+      createdTables: [],
+      fieldMapping: cloneFieldMapping(fieldMappings),
+    };
+  },
+  [resolveTablesForPipeline, cloneFieldMapping, fieldMappings]
+);
 
   // 初始化主题：从多维表格获取（优先于本地存储）
 
@@ -460,8 +535,8 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
   }, [lang, theme, activeTab]);
 
   React.useEffect(() => {
-    appendOnlyRef.current = appendOnlyMode;
-  }, [appendOnlyMode]);
+    autoSyncFieldNamesRef.current = autoSyncFieldNames;
+  }, [autoSyncFieldNames]);
 
   React.useEffect(() => {
     let disposeDataChange: (() => void) | undefined;
@@ -513,10 +588,14 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
         tableTargetsRef.current = savedTargets;
         setTableTargets(savedTargets);
       }
-      const savedAppendOnly = await restore<boolean>('append_only_mode');
-      if (typeof savedAppendOnly === 'boolean') {
-        appendOnlyRef.current = savedAppendOnly;
-        setAppendOnlyMode(savedAppendOnly);
+      const savedAutoSync = await restore<boolean>('auto_sync_field_names');
+      if (typeof savedAutoSync === 'boolean') {
+        autoSyncFieldNamesRef.current = savedAutoSync;
+        setAutoSyncFieldNames(savedAutoSync);
+      }
+      const savedWriteScope = await restore<FieldWriteScope>('field_write_scope');
+      if (savedWriteScope === 'selected' || savedWriteScope === 'all') {
+        setFieldWriteScope(savedWriteScope);
       }
       const savedSchemas = await restore<Record<string, TableSchemaInfo>>('table_schemas');
       if (savedSchemas) {
@@ -582,10 +661,6 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
 
   function log(line: string) {
     setLogs(prev => [...prev, line]);
-    setRecentLogs(prev => {
-      const next = [...prev, line];
-      return next.slice(-6);
-    });
   }
 
   const restoreSnapshot = React.useCallback(async (snapshot: Snapshot) => {
@@ -697,7 +772,6 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
     if (parsing) return;
     setParsing(true);
     setLogs([]);
-    setRecentLogs([]);
     try {
       const trimmed = text.trim();
       if (!trimmed) {
@@ -857,29 +931,49 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
     if (executing || syncing || undoing) return;
     setExecuting(true);
     setLogs([]);
-    setRecentLogs([]);
     if (!tables.length) {
       log('没有可执行的表定义');
       setExecuting(false);
       return;
     }
-    const resolvedTables = resolveTablesForPipeline();
-    const snapshot = await takeSnapshot('写入全部数据');
+    const includeDisabled = fieldWriteScope === 'all';
+    const resolvedTables = resolveTablesForPipeline({ includeDisabled });
+    const snapshot = await takeSnapshot('写入全部数据', resolvedTables);
     const insertedRecordMap: Record<string, string[]> = {};
     const createdTables: Array<{ tableName: string; tableId?: string }> = [];
-    const isAppendOnly = appendOnlyRef.current;
-    let skippedCreation = false;
     try {
       const mappingAccumulator = cloneFieldMapping(fieldMappings);
-      const toCreate: ResolvedTableSpec[] = [];
+      const autoCreates: ResolvedTableSpec[] = [];
+      const autoCreateReasons: string[] = [];
+      const conditionalCreates: ResolvedTableSpec[] = [];
+      const conditionalCreateReasons: string[] = [];
       const toAppend: ResolvedTableSpec[] = [];
-      const createReasons: string[] = [];
       const appendTargets: string[] = [];
+      const existingNames = new Set<string>(Object.values(tableNamesRef.current || {}));
 
-      for (const spec of resolvedTables) {
+      for (let idx = 0; idx < resolvedTables.length; idx += 1) {
+        let spec = resolvedTables[idx];
         if (!spec?.name) continue;
         const originalName = spec.__sourceName;
         const targetConfig = tableTargetsRef.current[originalName] ?? tableTargets[originalName];
+        const isAutoTarget = !targetConfig || targetConfig.mode !== 'existing';
+
+        if (isAutoTarget) {
+          const desiredBase = originalName || spec.name;
+          let nextName = desiredBase;
+          if (existingNames.has(nextName)) {
+            nextName = ensureUniqueTableName(desiredBase, existingNames);
+          }
+          existingNames.add(nextName);
+          if (nextName !== spec.name) {
+            spec = { ...spec, name: nextName };
+            resolvedTables[idx] = spec;
+          }
+          autoCreates.push(spec);
+          autoCreateReasons.push(`${originalName} → ${spec.name}（自动目标：始终新建）`);
+          continue;
+        }
+
         let tableExists = true;
         try {
           await getTableByName(spec.name);
@@ -890,8 +984,8 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
         if (targetConfig?.mode === 'existing') {
           if (!tableExists) {
             log(`目标表 ${spec.name} 未找到，将为「${originalName}」自动创建新表`);
-            toCreate.push(spec);
-            createReasons.push(`${originalName}（指定目标缺失）`);
+            conditionalCreates.push(spec);
+            conditionalCreateReasons.push(`${originalName}（指定目标缺失）`);
           } else {
             toAppend.push(spec);
             appendTargets.push(`${originalName} → ${spec.name}`);
@@ -900,8 +994,8 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
         }
 
         if (!tableExists) {
-          toCreate.push(spec);
-          createReasons.push(`${originalName}（新建）`);
+          conditionalCreates.push(spec);
+          conditionalCreateReasons.push(`${originalName} → ${spec.name}（新建）`);
           continue;
         }
 
@@ -922,21 +1016,19 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
           else if (!stored) reason = '无历史结构记录';
           else if (missingMapping) reason = '发现新增字段';
           else reason = '字段或类型发生变更';
-          toCreate.push(spec);
-          createReasons.push(`${originalName}（${reason}）`);
+          conditionalCreates.push(spec);
+          conditionalCreateReasons.push(`${originalName} → ${spec.name}（${reason}）`);
         } else {
           toAppend.push(spec);
           appendTargets.push(`${originalName} → ${spec.name}`);
         }
       }
 
-      if (createReasons.length) {
-        if (isAppendOnly) {
-          log(`追加模式启用：以下表结构不匹配或目标缺失，已跳过写入 → ${createReasons.join('；')}`);
-          skippedCreation = true;
-        } else {
-          log(`检测到需要新建的数据表：${createReasons.join('；')}（自动使用最新结构）`);
-        }
+      if (autoCreateReasons.length) {
+        log(`自动创建目标：${autoCreateReasons.join('；')}`);
+      }
+      if (conditionalCreateReasons.length) {
+        log(`检测到需要新建的数据表：${conditionalCreateReasons.join('；')}（自动使用最新结构）`);
       }
       if (appendTargets.length) {
         log(`结构一致：将在 ${appendTargets.join('、')} 中追加数据`);
@@ -966,13 +1058,21 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
         );
       };
 
-      if (!isAppendOnly) {
-        await processTables(toCreate, false);
+      if (autoCreates.length) {
+        await processTables(autoCreates, false);
+      }
+      if (conditionalCreates.length) {
+        await processTables(conditionalCreates, false);
       }
       await processTables(toAppend, true);
       pruneFieldMapping(mappingAccumulator, resolvedTables);
       await persistFieldMappings(mappingAccumulator);
       await recordSchemasForTables(resolvedTables);
+      setTables(prev => {
+        const normalized = rebaseSyncedLabels(prev);
+        void persist('tables_state', normalized);
+        return normalized;
+      });
       snapshot.tables.forEach(t => {
         if (insertedRecordMap[t.tableName]?.length) {
           t.insertedRecordIds = insertedRecordMap[t.tableName];
@@ -991,18 +1091,15 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
           .join('、');
         log(`写入记录：${summary}`);
       }
-      if (skippedCreation) {
-        setBanner({ type: 'error', text: '追加模式生效：部分表未写入，请查看日志' });
-      } else {
-        setBanner({ type: 'success', text: '写入全部数据完成' });
-      }
+      setBanner({ type: 'success', text: '写入全部数据完成' });
       setTimeout(() => setBanner(null), 2500);
     } finally {
+      await refreshTableNames();
       setExecuting(false);
     }
   }
 
-  async function onSyncFields() {
+async function onSyncFields() {
     if (syncing || executing || undoing) return;
     if (!tables.length) {
       log('没有可同步的表定义');
@@ -1010,12 +1107,9 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
     }
     setSyncing(true);
     setLogs([]);
-    setRecentLogs([]);
     const resolvedTables = resolveTablesForPipeline();
-    const snapshot = await takeSnapshot('同步字段');
+    const snapshot = await takeSnapshot('同步字段', resolvedTables);
     const createdTables: Array<{ tableName: string; tableId?: string }> = [];
-    const isAppendOnly = appendOnlyRef.current;
-    let skippedCreation = false;
     try {
       const mappingAccumulator = cloneFieldMapping(fieldMappings);
       const tablesToCreate: ResolvedTableSpec[] = [];
@@ -1040,28 +1134,23 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
       }
 
       if (tablesToCreate.length) {
-        if (isAppendOnly) {
-          log(`追加模式启用：以下表缺失，未执行自动创建 → ${tablesToCreate.map(t => t.name).join('、')}`);
-          skippedCreation = true;
-        } else {
-          await runPipeline(
-            tablesToCreate,
-            {
-              createOnly: true,
-              fieldMapping: mappingAccumulator,
-              onFieldResolved: (tableName, fieldKey, fieldId) => {
-                if (!mappingAccumulator[tableName]) mappingAccumulator[tableName] = {};
-                mappingAccumulator[tableName][fieldKey] = fieldId;
-              },
-              onTableCreated: (tableName, tableId) => {
-                createdTables.push({ tableName, tableId });
-              },
+        await runPipeline(
+          tablesToCreate,
+          {
+            createOnly: true,
+            fieldMapping: mappingAccumulator,
+            onFieldResolved: (tableName, fieldKey, fieldId) => {
+              if (!mappingAccumulator[tableName]) mappingAccumulator[tableName] = {};
+              mappingAccumulator[tableName][fieldKey] = fieldId;
             },
-            log
-          );
-          const summaryCreated = tablesToCreate.map(t => t.name).join('、');
-          log(`已创建缺失的数据表：${summaryCreated}`);
-        }
+            onTableCreated: (tableName, tableId) => {
+              createdTables.push({ tableName, tableId });
+            },
+          },
+          log
+        );
+        const summaryCreated = tablesToCreate.map(t => t.name).join('、');
+        log(`已创建缺失的数据表：${summaryCreated}`);
       }
 
       const updatedMapping = await syncFieldDifferences(resolvedTables, { fieldMapping: mappingAccumulator }, log);
@@ -1071,16 +1160,13 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
       snapshot.createdTables = [...snapshot.createdTables, ...createdTables];
       setSnapshots(prev => [...prev, snapshot]);
       setLastDataChangeAt(Date.now());
-      if (skippedCreation) {
-        setBanner({ type: 'error', text: '追加模式生效：存在缺失表未同步，请检查日志' });
-      } else {
-        setBanner({ type: 'success', text: '字段同步完成' });
-      }
+      setBanner({ type: 'success', text: '字段同步完成' });
       setTimeout(() => setBanner(null), 2500);
     } catch (e: any) {
       log(`字段同步失败：${e.message}`);
       setBanner({ type: 'error', text: `字段同步失败：${e.message}` });
     } finally {
+      await refreshTableNames();
       setSyncing(false);
     }
   }
@@ -1164,26 +1250,59 @@ const takeSnapshot = React.useCallback(async (description: string): Promise<Snap
     setAutoDetectedFormat('json');
     persistTableTargets({});
     setRecordSummary({ tables: 0, records: 0 });
-    setRecentLogs([]);
     applyText('', { detectionFormat: 'auto' });
   }, [applyText, isMockData, persistTableTargets]);
 
-const tableScopeLabel = React.useMemo(() => {
+  const resolvedTargetNameMap = React.useMemo(() => {
+    const used = new Set<string>();
+    Object.values(tableNames || {}).forEach(name => {
+      if (typeof name === 'string' && name) used.add(name);
+    });
+    const map: Record<string, string> = {};
+    for (const spec of tables) {
+      if (!spec || !spec.name) continue;
+      const sourceName = spec.name;
+      const target = tableTargets[sourceName];
+      let effectiveName: string;
+      if (target?.mode === 'existing' && target.tableName) {
+        effectiveName = target.tableName;
+      } else {
+        effectiveName = sourceName;
+        if (used.has(effectiveName)) {
+          effectiveName = ensureUniqueTableName(effectiveName, used);
+        }
+      }
+      used.add(effectiveName);
+      map[sourceName] = effectiveName;
+    }
+    return map;
+  }, [tables, tableTargets, tableNames]);
+
+  const tableScopeLabel = React.useMemo(() => {
     if (!tables.length) return '暂无解析中的表';
     const entries = tables
       .map((t: any) => {
         if (!t?.name) return null;
         const target = tableTargets[t.name];
+        const resolvedName = resolvedTargetNameMap[t.name] || t.name;
         if (target?.mode === 'existing') {
-          return `${t.name} → ${target.tableName}`;
+          return `${t.name} → ${resolvedName}`;
         }
-        return `${t.name}（自动创建）`;
+        return `${t.name} → ${resolvedName}（待创建）`;
       })
       .filter(Boolean) as string[];
     if (!entries.length) return '暂无解析中的表';
     const preview = entries.slice(0, 3).join('、');
     return entries.length > 3 ? `${preview} 等 ${entries.length} 张表` : preview;
-  }, [tables, tableTargets]);
+  }, [tables, tableTargets, resolvedTargetNameMap]);
+
+  const tableOptionEntries = React.useMemo(() => {
+    return Object.entries(tableNames || {}).sort((a, b) => {
+      const nameA = a[1] ?? '';
+      const nameB = b[1] ?? '';
+      return nameA.localeCompare(nameB);
+    });
+  }, [tableNames]);
 
   const targetSummary = React.useMemo(() => {
     if (!tables.length) return [];
@@ -1191,14 +1310,16 @@ const tableScopeLabel = React.useMemo(() => {
       .map((t: any) => {
         if (!t?.name) return null;
         const target = tableTargets[t.name];
+        const resolvedName = resolvedTargetNameMap[t.name] || t.name;
         if (target?.mode === 'existing') {
-          const name = target.tableName || target.tableId;
+          const name = resolvedName || target.tableId;
           return { source: t.name, target: name, mode: 'existing' as const };
         }
-        return { source: t.name, target: '自动创建新表', mode: 'auto' as const };
+        return { source: t.name, target: resolvedName, mode: 'auto' as const };
       })
       .filter(Boolean) as Array<{ source: string; target: string; mode: 'auto' | 'existing' }>;
-  }, [tables, tableTargets]);
+  }, [tables, tableTargets, resolvedTargetNameMap]);
+
 
   const activeTableIndex = React.useMemo(() => {
     if (!tables.length) return -1;
@@ -1215,10 +1336,7 @@ const tableScopeLabel = React.useMemo(() => {
       return disabledState('当前表信息不完整');
     }
     const targetConfig = tableTargets[table.name];
-    const targetName =
-      targetConfig?.mode === 'existing' && targetConfig.tableName
-        ? targetConfig.tableName
-        : table.name;
+    const targetName = resolvedTargetNameMap[table.name] || table.name;
     const hasLinkedExisting = targetConfig?.mode === 'existing';
     const hasSchema = targetName ? Boolean(tableSchemas[targetName]) : false;
     const knownInBase = targetName
@@ -1240,7 +1358,7 @@ const tableScopeLabel = React.useMemo(() => {
       return String(current).trim() !== String(initial).trim();
     });
     if (!hasRename) {
-      return disabledState('字段未发生改名');
+      return disabledState('字段名称未发生变化');
     }
     if (syncing) {
       return disabledState('字段同步进行中');
@@ -1251,8 +1369,8 @@ const tableScopeLabel = React.useMemo(() => {
     if (undoing) {
       return disabledState('撤销处理中');
     }
-    return { disabled: false, reason: '字段名称已调整，可立即同步' };
-  }, [activeTableIndex, tables, tableTargets, tableSchemas, tableNames, syncing, executing, undoing]);
+    return { disabled: false, reason: '字段名称已调整，可随时同步' };
+  }, [activeTableIndex, tables, tableTargets, resolvedTargetNameMap, tableSchemas, tableNames, syncing, executing, undoing]);
 
   const selectionLabel = React.useMemo(() => {
     if (!selection) return '当前未选中表';
@@ -1270,6 +1388,13 @@ const tableScopeLabel = React.useMemo(() => {
     if (!snapshots.length) return null;
     return new Date(snapshots[snapshots.length - 1].timestamp).toLocaleString();
   }, [snapshots]);
+
+  React.useEffect(() => {
+    if (!autoSyncFieldNamesRef.current) return;
+    if (syncFieldsAvailability.disabled) return;
+    if (syncing || executing || undoing) return;
+    onSyncFields();
+  }, [autoSyncFieldNames, syncFieldsAvailability.disabled, syncing, executing, undoing]);
 
   return (
     <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem', minWidth: 0, width: '100%', boxSizing: 'border-box' }} data-theme={theme}>
@@ -1336,61 +1461,148 @@ const tableScopeLabel = React.useMemo(() => {
         mockInfo={mockNotice}
         onRandomMock={handleRandomMock}
       />
-      <div className="muted" style={{ fontSize: '0.8rem', lineHeight: 1.6 }}>
-        操作范围：{tableScopeLabel}。执行前会自动生成快照，可使用“撤销上一次变更”恢复{lastSnapshotTime ? `（最近快照：${lastSnapshotTime}）` : ''}。
-        当前表 → 目标表：
-      </div>
-      <div className="card" style={{ padding: '0.6rem 0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.75rem' }}>
-          <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>源表 → 目标表</span>
-          <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer', fontSize: '0.8rem' }} title="启用后仅允许向已存在且结构匹配的数据表追加数据，不会自动创建新表或字段。">
-            <input
-              type="checkbox"
-              checked={appendOnlyMode}
-              onChange={(e) => persistAppendOnlyMode(e.target.checked)}
-            />
-            仅追加模式
-          </label>
+      <div className="card" style={{ padding: '0.95rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', alignItems: 'baseline', gap: '0.5rem' }}>
+          <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>执行任务</span>
+          <span className="muted" style={{ fontSize: '0.78rem' }}>解析结果：{recordSummary.tables} 张表 / {recordSummary.records} 条记录</span>
         </div>
-        <div className="muted" style={{ fontSize: '0.78rem' }}>解析结果：{recordSummary.tables} 张表 / {recordSummary.records} 条记录</div>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
-          {targetSummary.length ? (
-            targetSummary.map((item) => (
+        <div className="muted" style={{ fontSize: '0.78rem', lineHeight: 1.5 }}>
+          操作范围：{tableScopeLabel}。执行前会自动生成快照，可使用“撤销上一次变更”恢复{lastSnapshotTime ? `（最近快照：${lastSnapshotTime}）` : ''}。
+        </div>
+        <div className="muted" style={{ fontSize: '0.78rem', lineHeight: 1.5 }}>
+          1. 为每个源表选择目标数据表；默认“自动创建”会生成新表。2. 如需重命名字段，请在下方预览区调整后使用本面板中的“同步字段名称”按钮。3. 准备就绪后点击“写入全部”完成批量导入。
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+          {tables.length ? (
+            tables.map((t: any, idx: number) => {
+              if (!t?.name) return null;
+              const targetConfig = tableTargets[t.name] ?? { mode: 'auto' as const };
+              const selectValue = targetConfig.mode === 'existing' ? targetConfig.tableId : 'auto';
+              const resolvedAutoName = resolvedTargetNameMap[t.name] || t.name;
+              const targetLabel =
+                targetConfig.mode === 'existing'
+                  ? (targetConfig.tableName || tableNames[targetConfig.tableId] || targetConfig.tableId)
+                  : resolvedAutoName;
+              return (
+                <div
+                  key={t.name || idx}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    flexWrap: 'wrap',
+                    padding: '0.4rem 0',
+                    borderBottom: idx === tables.length - 1 ? 'none' : '1px solid rgba(0,0,0,0.05)',
+                  }}
+                >
+                  <span style={{ fontWeight: 600, fontSize: '0.85rem', minWidth: 140 }}>{t.name || `表${idx + 1}`}</span>
+                  <select
+                    className="select"
+                    value={selectValue}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      if (value === 'auto') {
+                        void handleTableTargetChange(t.name, { mode: 'auto' });
+                      } else {
+                        const tableName = tableNames[value] || value;
+                        void handleTableTargetChange(t.name, { mode: 'existing', tableId: value, tableName });
+                      }
+                    }}
+                    style={{ width: '220px', maxWidth: '100%' }}
+                  >
+                    <option value="auto">自动创建新表（默认）</option>
+                    {tableOptionEntries.map(([id, name]) => (
+                      <option key={id} value={id}>{name}</option>
+                    ))}
+                  </select>
+                  <span className="muted" style={{ fontSize: '0.75rem' }}>
+                    {targetConfig.mode === 'existing'
+                      ? `写入目标：${targetLabel}`
+                      : `将新建：${targetLabel}`}
+                  </span>
+                </div>
+              );
+            })
+          ) : (
+            <span className="muted" style={{ fontSize: '0.78rem' }}>暂无解析中的表，请先解析数据或选择示例。</span>
+          )}
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+          <span className="muted" style={{ fontSize: '0.78rem' }}>字段范围：</span>
+          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', cursor: 'pointer' }}>
+              <input
+                type="radio"
+                name="field_write_scope"
+                value="selected"
+                checked={fieldWriteScope === 'selected'}
+                onChange={() => persistFieldWriteScope('selected')}
+              />
+              仅勾选字段
+            </label>
+            <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', cursor: 'pointer' }}>
+              <input
+                type="radio"
+                name="field_write_scope"
+                value="all"
+                checked={fieldWriteScope === 'all'}
+                onChange={() => persistFieldWriteScope('all')}
+              />
+              所有字段
+            </label>
+          </div>
+          <span className="muted" style={{ fontSize: '0.75rem' }}>
+            勾选模式仅写入已启用字段；选择“所有字段”会忽略字段勾选状态，将所有解析字段一并写入。
+          </span>
+        </div>
+        {targetSummary.length ? (
+          <div className="muted" style={{ fontSize: '0.75rem', display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+            {targetSummary.map((item) => (
               <span
-                key={item.source}
-                className="muted"
+                key={`${item.source}-${item.target}`}
                 style={{
-                  fontSize: '0.78rem',
                   padding: '4px 8px',
-                  background: item.mode === 'existing' ? 'rgba(22,119,255,0.12)' : 'rgba(82,196,26,0.12)',
                   borderRadius: 6,
+                  background: item.mode === 'existing' ? 'rgba(22,119,255,0.12)' : 'rgba(82,196,26,0.12)',
                   border: item.mode === 'existing' ? '1px solid rgba(22,119,255,0.2)' : '1px solid rgba(82,196,26,0.25)',
                 }}
               >
-                {item.source} → {item.target}
+                {item.source} → {item.target}{item.mode === 'auto' ? '（待创建）' : ''}
               </span>
-            ))
-          ) : (
-            <span className="muted" style={{ fontSize: '0.78rem' }}>暂无映射，请在下方表单中配置目标数据表</span>
-          )}
+            ))}
+          </div>
+        ) : null}
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem', alignItems: 'center' }}>
+          <button
+            className="btn btn-primary"
+            style={{ minWidth: '200px' }}
+            onClick={onExecuteWriteAll}
+            disabled={executing || syncing || undoing}
+            title="写入当前解析出的所有记录：自动模式将生成新表，已绑定目标则追加记录。"
+          >
+            {executing ? '执行中…' : '写入全部'}
+          </button>
+          <button
+            className="btn"
+            onClick={onSyncFields}
+            disabled={syncFieldsAvailability.disabled || syncing || executing || undoing}
+            title={syncFieldsAvailability.disabled ? (syncFieldsAvailability.reason || '字段名称未准备就绪') : '同步字段名称以保持目标表字段标题一致'}
+          >
+            {syncing ? '同步中…' : '同步字段名称'}
+          </button>
+          <button
+            className="btn btn-ghost"
+            onClick={handleUndo}
+            disabled={executing || syncing || undoing || snapshots.length === 0}
+            title="撤销最近一次写入或字段同步操作"
+          >
+            {undoing ? '撤销中…' : '撤销上一次变更'}
+          </button>
         </div>
+        {syncFieldsAvailability.disabled && syncFieldsAvailability.reason ? (
+          <span className="muted" style={{ fontSize: '0.75rem' }}>{syncFieldsAvailability.reason}</span>
+        ) : null}
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <button className="btn btn-ghost" onClick={handleUndo} disabled={executing || syncing || undoing || snapshots.length === 0}>
-          {undoing ? '撤销中…' : '撤销上一次变更'}
-        </button>
-        <button className="btn btn-primary" onClick={onExecuteWriteAll} disabled={executing || syncing || undoing} title="将解析出的所有记录写入目标表：结构匹配时追加，不匹配时自动新建">
-          {executing ? '执行中…' : '写入全部（基于目标表）'}
-        </button>
-      </div>
-      {recentLogs.length ? (
-        <div className="card" style={{ padding: '0.5rem 0.75rem', display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
-          <span className="muted" style={{ fontSize: '0.78rem' }}>最近操作日志</span>
-          {recentLogs.map((line, idx) => (
-            <span key={idx} style={{ fontFamily: 'monospace', fontSize: '0.78rem' }}>{line}</span>
-          ))}
-        </div>
-      ) : null}
       <div className="muted" style={{ fontSize: '0.8rem' }}>{selectionLabel}</div>
       {lastDataChangeAt && (
         <div className="muted" style={{ fontSize: '0.8rem' }}>最近数据更新：{new Date(lastDataChangeAt).toLocaleTimeString()}</div>
@@ -1407,15 +1619,8 @@ const tableScopeLabel = React.useMemo(() => {
         onFieldLabelChange={handleFieldLabelChange}
         onFieldToggle={handleFieldToggle}
         lang={lang}
-        tableTargets={tableTargets}
-        tableNames={tableNames}
-        onTableTargetChange={handleTableTargetChange}
-        syncFieldsState={{
-          disabled: syncFieldsAvailability.disabled,
-          reason: syncFieldsAvailability.reason,
-          busy: syncing,
-          onClick: onSyncFields,
-        }}
+        autoSyncFieldNames={autoSyncFieldNames}
+        onAutoSyncToggle={persistAutoSyncFieldNames}
       />
       <LogPane logs={logs} />
     </div>

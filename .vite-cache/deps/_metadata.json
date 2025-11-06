@@ -1,55 +1,55 @@
 {
-  "hash": "3c97f1ee",
-  "configHash": "e565b2ac",
+  "hash": "3aa9f877",
+  "configHash": "e4f720e3",
   "lockfileHash": "349c581b",
-  "browserHash": "fd921bbd",
+  "browserHash": "a569aae9",
   "optimized": {
     "react": {
       "src": "../../node_modules/react/index.js",
       "file": "react.js",
-      "fileHash": "f87acfca",
+      "fileHash": "477d70a9",
       "needsInterop": true
     },
     "react-dom": {
       "src": "../../node_modules/react-dom/index.js",
       "file": "react-dom.js",
-      "fileHash": "b18c0e92",
+      "fileHash": "c9c5fb3c",
       "needsInterop": true
     },
     "react/jsx-dev-runtime": {
       "src": "../../node_modules/react/jsx-dev-runtime.js",
       "file": "react_jsx-dev-runtime.js",
-      "fileHash": "a1dc89c3",
+      "fileHash": "7a86bf83",
       "needsInterop": true
     },
     "react/jsx-runtime": {
       "src": "../../node_modules/react/jsx-runtime.js",
       "file": "react_jsx-runtime.js",
-      "fileHash": "9e186c39",
+      "fileHash": "04aca693",
       "needsInterop": true
     },
     "@douyinfe/semi-ui": {
       "src": "../../node_modules/@douyinfe/semi-ui/lib/es/index.js",
       "file": "@douyinfe_semi-ui.js",
-      "fileHash": "07b788c6",
+      "fileHash": "b15d8db3",
       "needsInterop": false
     },
     "@lark-base-open/js-sdk": {
       "src": "../../node_modules/@lark-base-open/js-sdk/dist/index.mjs",
       "file": "@lark-base-open_js-sdk.js",
-      "fileHash": "13e2421a",
+      "fileHash": "e9da311e",
       "needsInterop": false
     },
     "react-dom/client": {
       "src": "../../node_modules/react-dom/client.js",
       "file": "react-dom_client.js",
-      "fileHash": "c91671bd",
+      "fileHash": "ae0846c2",
       "needsInterop": true
     },
     "relaxed-json": {
       "src": "../../node_modules/relaxed-json/relaxed-json.js",
       "file": "relaxed-json.js",
-      "fileHash": "4fbd29c8",
+      "fileHash": "6d853ac1",
       "needsInterop": true
     }
   },
@@ -60,14 +60,14 @@
     "chunk-QFD2GQ4D": {
       "file": "chunk-QFD2GQ4D.js"
     },
+    "chunk-XHLFFSD7": {
+      "file": "chunk-XHLFFSD7.js"
+    },
     "chunk-BC63SET5": {
       "file": "chunk-BC63SET5.js"
     },
     "chunk-TWJRYSII": {
       "file": "chunk-TWJRYSII.js"
-    },
-    "chunk-XHLFFSD7": {
-      "file": "chunk-XHLFFSD7.js"
     },
     "chunk-DC5AMYBS": {
       "file": "chunk-DC5AMYBS.js"
