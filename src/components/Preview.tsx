@@ -234,7 +234,9 @@ export default function Preview({
                   <input
                     type="checkbox"
                     checked={autoSyncFieldNames}
-                    onChange={(e) => onAutoSyncToggle?.(e.target.checked)}
+                    onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+                      onAutoSyncToggle?.(event.target.checked)
+                    }
                     disabled={!onAutoSyncToggle}
                   />
                   自动刷新字段名称
@@ -246,7 +248,13 @@ export default function Preview({
               {/* 搜索、筛选与批量操作 */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0 0.75rem 0.5rem 0.75rem' }}>
                 <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <input className="input" placeholder="搜索字段名…" value={query} onChange={(e)=>setQuery(e.target.value)} style={{ maxWidth: '100%', width: '280px', minWidth: '200px' }} />
+                  <input
+                    className="input"
+                    placeholder="搜索字段名…"
+                    value={query}
+                    onChange={(event: React.ChangeEvent<HTMLInputElement>) => setQuery(event.target.value)}
+                    style={{ maxWidth: '100%', width: '280px', minWidth: '200px' }}
+                  />
                   <button className="btn" onClick={()=>{
                     const visible = (t.fields || []).filter((f:any)=>!SYSTEM_TYPES.has(f.type));
                     const filtered = visible.filter((f:any)=>{
@@ -314,8 +322,8 @@ export default function Preview({
                           });
                           return filtered.length>0 && filtered.every((f:any)=>(f.__enabled ?? true));
                         })()}
-                        onChange={(e)=>{
-                          const enabled = e.target.checked;
+                        onChange={(event: React.ChangeEvent<HTMLInputElement>)=>{
+                          const enabled = event.target.checked;
                           const visible = (t.fields || []).filter((f:any)=>!SYSTEM_TYPES.has(f.type));
                           const filtered = visible.filter((f:any)=>{
                             if (onlySuggested && !((f as any).suggestedTypes && (f as any).suggestedTypes.length)) return false;
@@ -371,9 +379,9 @@ export default function Preview({
                           <input
                             type="checkbox"
                             checked={(f as any).__enabled !== false}
-                            onChange={(e) => {
+                            onChange={(event: React.ChangeEvent<HTMLInputElement>) => {
                               const fieldIdx = t.fields.indexOf(f);
-                              onFieldToggle && onFieldToggle(idx, fieldIdx, e.target.checked);
+                              onFieldToggle && onFieldToggle(idx, fieldIdx, event.target.checked);
                             }}
                           />
                         </div>
@@ -383,9 +391,10 @@ export default function Preview({
                             style={{ fontFamily: 'monospace', width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}
                             defaultValue={(f as any).label || f.name}
                             placeholder={f.name}
-                            onBlur={(e) => {
+                            onBlur={(event: React.FocusEvent<HTMLInputElement>) => {
                               const fieldIdx = t.fields.indexOf(f);
-                              onFieldLabelChange && onFieldLabelChange(idx, fieldIdx, e.target.value || f.name);
+                              onFieldLabelChange &&
+                                onFieldLabelChange(idx, fieldIdx, event.target.value || f.name);
                             }}
                           />
                           <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
@@ -405,9 +414,9 @@ export default function Preview({
                         <div className="table-cell">
                           <select
                             value={f.type}
-                            onChange={(e) => {
+                            onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
                               const fieldIdx = t.fields.indexOf(f);
-                              onFieldTypeChange && onFieldTypeChange(idx, fieldIdx, e.target.value);
+                              onFieldTypeChange && onFieldTypeChange(idx, fieldIdx, event.target.value);
                             }}
                             className="select"
                             style={{ width: '100%', maxWidth: '100%', boxSizing: 'border-box' }}

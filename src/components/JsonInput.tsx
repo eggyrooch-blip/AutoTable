@@ -223,7 +223,7 @@ export default function JsonInput({
         </button>
         <textarea
           value={value}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => onChange(event.target.value)}
           placeholder={placeholder}
           className="textarea"
           style={{ minHeight: '6rem' }}
@@ -250,9 +250,9 @@ export default function JsonInput({
               {formatError ? <div className="format-error">格式化失败：{formatError}</div> : null}
               <textarea
                 value={previewContent}
-                onChange={(e) => {
+                onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => {
                   setFormatError(null);
-                  const next = e.target.value;
+                  const next = event.target.value;
                   setPreviewContent(next);
                   onChange(next);
                 }}

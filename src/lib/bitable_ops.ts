@@ -1,8 +1,11 @@
 import { bitable, FieldType } from '@lark-base-open/js-sdk';
+import type { Table, TableMeta } from '@lark-base-open/js-sdk';
 import type { FieldSpec, TableSpec } from './json_parser';
 import { normalizeName, resolveNameConflict } from './utils';
 
 type Logger = (msg: string) => void;
+
+type FieldMeta = { id: string; name: string; type?: number };
 
 export type FieldMapping = Record<string, Record<string, string>>;
 
@@ -31,11 +34,11 @@ type PipelineOptions = {
 };
 
 async function listTableNames(): Promise<string[]> {
-  const metas = await bitable.base.getTableMetaList();
-  return metas.map(m => m.name);
+  const metas = (await bitable.base.getTableMetaList()) as TableMeta[];
+  return metas.map((meta: TableMeta) => meta.name);
 }
 
-export async function createTable(tableName: string, log?: Logger) {
+export async function createTable(tableName: string, log?: Logger): Promise<Table> {
   const desired = normalizeName(tableName);
   const finalName = await resolveNameConflict(listTableNames, desired, '_dup');
   log?.(`创建数据表: ${finalName}`);
@@ -50,14 +53,14 @@ export async function createTable(tableName: string, log?: Logger) {
   return table;
 }
 
-export async function getTableByName(tableName: string) {
-  const metas = await bitable.base.getTableMetaList();
-  const meta = metas.find(m => m.name === tableName);
+export async function getTableByName(tableName: string): Promise<Table> {
+  const metas = (await bitable.base.getTableMetaList()) as TableMeta[];
+  const meta = metas.find((item: TableMeta) => item.name === tableName);
   if (!meta) throw new Error(`未找到数据表: ${tableName}`);
   return await bitable.base.getTableById(meta.id);
 }
 
-function mapToFieldType(t: string): FieldType {
+function mapToFieldType(t: string): number {
   switch (t) {
     case 'Number': return FieldType.Number;
     case 'Checkbox': return FieldType.Checkbox;
@@ -88,7 +91,7 @@ function mapToFieldType(t: string): FieldType {
   }
 }
 
-async function createFieldInternal(table: any, field: FieldSpec & { label?: string }, log?: Logger) {
+async function createFieldInternal(table: Table, field: FieldSpec & { label?: string }, log?: Logger) {
   const desired = normalizeName(field.label || field.name);
   const existing = await table.getFieldMetaList();
   const existingNames = new Set<string>(existing.map((m: any) => m.name.toLowerCase()));
@@ -168,7 +171,7 @@ export async function materializeTable(
   options: MaterializeOptions = {},
   log?: Logger
 ) {
-  let table: any;
+  let table: Table;
   if (options.writeOnly) {
     try {
       table = await getTableByName(spec.name);
@@ -193,7 +196,7 @@ export async function materializeTable(
     }
   }
 
-  const tableFieldMapping = options.fieldMapping ?? {};
+  const tableFieldMapping: Record<string, string> = options.fieldMapping ? { ...options.fieldMapping } : {};
   const desiredFields = spec.fields
     .filter(f => (f as any).__enabled !== false)
     .map(f => ({
@@ -206,9 +209,9 @@ export async function materializeTable(
     }));
 
   const refreshMeta = async () => {
-    const metas = await table.getFieldMetaList();
-    const byId = new Map<string, any>();
-    const byName = new Map<string, any>();
+    const metas = (await table.getFieldMetaList()) as FieldMeta[];
+    const byId = new Map<string, FieldMeta>();
+    const byName = new Map<string, FieldMeta>();
     for (const meta of metas) {
       byId.set(meta.id, meta);
       byName.set(meta.name.toLowerCase(), meta);
@@ -235,7 +238,7 @@ export async function materializeTable(
     if (exact) return exact.id;
 
     const normalizedLabel = normalizeName(label);
-    const normalizedMatch = metas.find((meta: any) => normalizeName(meta.name) === normalizedLabel);
+    const normalizedMatch = metas.find((meta: FieldMeta) => normalizeName(meta.name) === normalizedLabel);
     if (normalizedMatch) return normalizedMatch.id;
 
     if (source) {
@@ -254,7 +257,7 @@ export async function materializeTable(
       if (createdId && metasById.has(createdId)) {
         return createdId;
       }
-      const refreshNormalized = metas.find((meta: any) => normalizeName(meta.name) === normalizedLabel);
+      const refreshNormalized = metas.find((meta: FieldMeta) => normalizeName(meta.name) === normalizedLabel);
       if (refreshNormalized) return refreshNormalized.id;
     } catch (error) {
       log?.(`  字段创建失败 ${label}: ${(error as Error).message}`);
@@ -365,9 +368,9 @@ function resolveFieldIdFromMeta(
   label: string,
   source: string | undefined,
   tableMapping: Record<string, string>,
-  metas: any[],
-  metasById: Map<string, any>,
-  metasByName: Map<string, any>
+  metas: FieldMeta[],
+  metasById: Map<string, FieldMeta>,
+  metasByName: Map<string, FieldMeta>
 ): string | undefined {
   let candidate = tableMapping[key];
   if (candidate && metasById.has(candidate)) return candidate;
@@ -396,7 +399,7 @@ export async function syncFieldDifferences(
   const mapping = cloneFieldMapping(options.fieldMapping);
 
   for (const spec of specs) {
-    let table: any;
+    let table: Table;
     try {
       table = await getTableByName(spec.name);
     } catch (error) {
@@ -404,9 +407,9 @@ export async function syncFieldDifferences(
       continue;
     }
 
-    const metas = await table.getFieldMetaList();
-    const metasById = new Map<string, any>();
-    const metasByName = new Map<string, any>();
+    const metas = (await table.getFieldMetaList()) as FieldMeta[];
+    const metasById = new Map<string, FieldMeta>();
+    const metasByName = new Map<string, FieldMeta>();
     for (const meta of metas) {
       metasById.set(meta.id, meta);
       metasByName.set(meta.name.toLowerCase(), meta);

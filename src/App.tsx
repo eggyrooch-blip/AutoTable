@@ -3,6 +3,7 @@ import React from 'react';
 import JsonInput from './components/JsonInput';
 import Preview from './components/Preview';
 import LogPane from './components/LogPane';
+import StepHeader from './components/StepHeader';
 import { parseInputToSpecs, type TableSpec } from './lib/json_parser';
 import { inferFieldsFromRecords } from './lib/type_infer';
 import { runPipeline, syncFieldDifferences, FieldMapping, getTableByName } from './lib/bitable_ops';
@@ -175,49 +176,6 @@ export default function App() {
     () => (logMode === 'latest' ? latestLogs : logs),
     [logMode, latestLogs, logs]
   );
-  const StepHeader = ({
-    step,
-    title,
-    hint,
-    action,
-  }: {
-    step: string;
-    title: string;
-    hint?: string;
-    action?: React.ReactNode;
-  }) => (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        gap: '0.75rem',
-        flexWrap: 'wrap',
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-        <span
-          style={{
-            fontSize: '0.85rem',
-            fontWeight: 600,
-            letterSpacing: '0.04em',
-            padding: '4px 10px',
-            borderRadius: 999,
-            background: 'rgba(15,23,42,0.08)',
-            color: 'rgba(15,23,42,0.8)',
-          }}
-        >
-          {step}
-        </span>
-        <span style={{ fontSize: '1rem', fontWeight: 600 }}>{title}</span>
-        {hint ? (
-          <span style={{ fontSize: '0.78rem', color: 'rgba(15,23,42,0.65)' }}>{hint}</span>
-        ) : null}
-      </div>
-      {action ? <div>{action}</div> : null}
-    </div>
-  );
-
   const persist = React.useCallback(async (key: string, value: any) => {
     try {
       await bitable.bridge.setData(key, value);
@@ -299,6 +257,22 @@ export default function App() {
       persist('ui_state', next);
     },
     [persist]
+  );
+
+  const handleThemeToggle = React.useCallback(() => {
+    setTheme(prev => {
+      const next = prev === 'light' ? 'dark' : 'light';
+      persistUIState({ theme: next });
+      return next;
+    });
+  }, [persistUIState]);
+
+  const handleLangChange = React.useCallback(
+    (value: 'zh' | 'en') => {
+      setLang(value);
+      persistUIState({ lang: value });
+    },
+    [persistUIState]
   );
 
   const cloneFieldMapping = React.useCallback((mapping: FieldMapping): FieldMapping => {
@@ -589,6 +563,13 @@ const takeSnapshot = React.useCallback(
   }, [lang, theme, activeTab]);
 
   React.useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const root = document.documentElement;
+    root.setAttribute('data-theme', theme);
+    document.body?.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  React.useEffect(() => {
     autoSyncFieldNamesRef.current = autoSyncFieldNames;
   }, [autoSyncFieldNames]);
 
@@ -605,10 +586,14 @@ const takeSnapshot = React.useCallback(
       }
 
       try {
-        const bitableTheme = await bitable.bridge.getTheme();
-        const mappedTheme = bitableTheme === 'DARK' ? 'dark' : 'light';
-        setTheme(mappedTheme);
-        uiStateRef.current = { ...uiStateRef.current, theme: mappedTheme };
+        const bitableTheme = await bitable.bridge.getTheme?.();
+        if (bitableTheme) {
+          const mappedTheme = bitableTheme === 'DARK' ? 'dark' : 'light';
+          setTheme(mappedTheme);
+          uiStateRef.current = { ...uiStateRef.current, theme: mappedTheme };
+        } else if (ui?.theme) {
+          setTheme(ui.theme);
+        }
       } catch (err) {
         console.warn('Failed to get theme from bitable:', err);
         if (ui?.theme) setTheme(ui.theme);
@@ -673,7 +658,7 @@ const takeSnapshot = React.useCallback(
             setSelection(sel as SelectionInfo);
             const tableId = sel.tableId;
             if (tableId) {
-              let names = tableNamesRef.current;
+              let names: Record<string, string> = tableNamesRef.current;
               if (!names[tableId]) {
                 names = await refreshTableNames();
               }
@@ -692,8 +677,8 @@ const takeSnapshot = React.useCallback(
       })();
     };
 
-    const handleSelectionChange = (event: any) => {
-      setSelection(event as SelectionInfo);
+    const handleSelectionChange = (event: SelectionInfo) => {
+      setSelection(event);
       const tableId = event?.tableId;
       if (tableId && !tableNamesRef.current[tableId]) {
         refreshTableNames();
@@ -701,10 +686,16 @@ const takeSnapshot = React.useCallback(
     };
 
     try {
-      disposeDataChange = bitable.bridge.onDataChange(handleDataChange);
+      if (typeof bitable.bridge.onDataChange === 'function') {
+        const disposer = bitable.bridge.onDataChange(handleDataChange);
+        disposeDataChange = typeof disposer === 'function' ? disposer : undefined;
+      }
     } catch {}
     try {
-      disposeSelection = bitable.base.onSelectionChange?.(handleSelectionChange);
+      const selectionDisposer = bitable.base.onSelectionChange?.(handleSelectionChange);
+      if (typeof selectionDisposer === 'function') {
+        disposeSelection = selectionDisposer;
+      }
     } catch {}
 
     return () => {
@@ -1391,6 +1382,26 @@ async function onSyncFields() {
       .filter(Boolean) as Array<{ source: string; target: string; mode: 'auto' | 'existing' }>;
   }, [tables, tableTargets, resolvedTargetNameMap]);
 
+  const metricItems = React.useMemo(() => {
+    const enabledFieldCount = tables.reduce((total, table) => {
+      if (!table || !Array.isArray(table.fields)) return total;
+      const enabled = table.fields.filter((field: any) => (field as any)?.__enabled !== false).length;
+      return total + enabled;
+    }, 0);
+    const linkedTargetCount = tables.reduce((total, table) => {
+      if (!table?.name) return total;
+      return total + (tableTargets[table.name]?.mode === 'existing' ? 1 : 0);
+    }, 0);
+    return [
+      { label: '解析表', value: recordSummary.tables },
+      { label: '预计记录', value: recordSummary.records },
+      { label: '启用字段', value: enabledFieldCount },
+      { label: '已绑定目标', value: linkedTargetCount },
+    ];
+  }, [recordSummary, tables, tableTargets]);
+
+  const themeButtonLabel = theme === 'light' ? '切换至深色模式' : '切换至浅色模式';
+
 
   const activeTableIndex = React.useMemo(() => {
     if (!tables.length) return -1;
@@ -1480,15 +1491,53 @@ async function onSyncFields() {
   }, [banner]);
 
   return (
-    <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem', minWidth: 0, width: '100%', boxSizing: 'border-box' }} data-theme={theme}>
+    <div className="app-shell" data-theme={theme}>
+      <header className="app-toolbar">
+        <div className="app-toolbar__brand">
+          <h1 className="app-toolbar__title">AutoTable 助手</h1>
+          <p className="app-toolbar__subtitle">快速解析数据、同步字段并写入多维表格。</p>
+        </div>
+        <div className="app-toolbar__actions">
+          <label className="app-toolbar__control">
+            <span>界面语言</span>
+            <select
+              className="select app-toolbar__select"
+              value={lang}
+              onChange={(event: React.ChangeEvent<HTMLSelectElement>) =>
+                handleLangChange(event.target.value as 'zh' | 'en')
+              }
+            >
+              <option value="zh">中文</option>
+              <option value="en">English</option>
+            </select>
+          </label>
+          <button
+            type="button"
+            className="btn btn-ghost app-toolbar__toggle"
+            onClick={handleThemeToggle}
+            aria-pressed={theme === 'dark'}
+            title={themeButtonLabel}
+          >
+            {themeButtonLabel}
+          </button>
+        </div>
+      </header>
       {banner && (
         <div className={`alert ${banner.type === 'success' ? 'alert-success' : banner.type === 'error' ? 'alert-error' : 'alert-info'}`}>
           {banner.text}
         </div>
       )}
-      <section style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+      <section className="app-metrics" aria-label="解析概览">
+        {metricItems.map(item => (
+          <div key={item.label} className="app-metric">
+            <span className="app-metric__value">{item.value.toLocaleString()}</span>
+            <span className="app-metric__label">{item.label}</span>
+          </div>
+        ))}
+      </section>
+      <section className="step-section">
         <StepHeader step="01" title="数据输入" hint="粘贴原始数据或导入文件后解析。" />
-        <div className="card" style={{ padding: '0.85rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+        <div className="card card--padded">
           <JsonInput
             value={text}
             format={inputFormat}
@@ -1547,7 +1596,7 @@ async function onSyncFields() {
             mockInfo={mockNotice}
             onRandomMock={handleRandomMock}
           />
-          <div style={{ fontSize: '0.75rem', color: 'rgba(15,23,42,0.6)' }}>
+          <div className="app-hint">
             {recordSummary.tables > 0
               ? `已解析：${recordSummary.tables} 张表 / ${recordSummary.records} 条记录`
               : '粘贴数据后点击“解析数据”开始。'}
@@ -1555,7 +1604,7 @@ async function onSyncFields() {
         </div>
       </section>
 
-      <section style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+      <section className="step-section">
         <StepHeader
           step="02"
           title="结构预览"
@@ -1575,9 +1624,9 @@ async function onSyncFields() {
             ) : null
           }
         />
-        <div className="card" style={{ padding: '0.85rem 1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+        <div className="card card--padded">
           {previewCollapsed ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', color: 'rgba(15,23,42,0.7)', fontSize: '0.78rem' }}>
+            <div className="preview-placeholder">
               <div>
                 解析结果：{recordSummary.tables} 张表 / {recordSummary.records} 条记录
               </div>
@@ -1594,7 +1643,7 @@ async function onSyncFields() {
               ) : (
                 <div>暂无解析数据。</div>
               )}
-              <div style={{ fontSize: '0.76rem', color: 'rgba(15,23,42,0.55)' }}>
+              <div className="preview-placeholder__hint">
                 点击“展开预览”查看字段列表与示例值。
               </div>
             </div>
@@ -1618,10 +1667,10 @@ async function onSyncFields() {
         </div>
       </section>
 
-      <section style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+      <section className="step-section">
         <StepHeader step="03" title="执行任务" hint="选择目标表与字段范围后同步或写入。" />
-        <div className="card" style={{ padding: '0.95rem 1.1rem', display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', alignItems: 'baseline', gap: '0.6rem' }}>
+        <div className="card card--spacious">
+          <div className="card__section card__section--header">
             <span className="muted" style={{ fontSize: '0.78rem' }}>操作范围：{tableScopeLabel}</span>
             {lastSnapshotTime ? (
               <span className="muted" style={{ fontSize: '0.72rem' }}>最近快照：{lastSnapshotTime}</span>
@@ -1653,21 +1702,14 @@ async function onSyncFields() {
               return (
                 <div
                   key={t.name || idx}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.5rem',
-                    flexWrap: 'wrap',
-                    padding: '0.35rem 0',
-                    borderBottom: idx === tables.length - 1 ? 'none' : '1px solid rgba(15,23,42,0.06)',
-                  }}
+                  className={`target-row${idx === tables.length - 1 ? ' is-last' : ''}`}
                 >
-                  <span style={{ fontWeight: 600, fontSize: '0.85rem', minWidth: 140 }}>{t.name || `表${idx + 1}`}</span>
+                  <span className="target-row__name">{t.name || `表${idx + 1}`}</span>
                   <select
-                    className="select"
+                    className="select target-row__select"
                     value={selectValue}
-                    onChange={(e) => {
-                      const value = e.target.value;
+                    onChange={(event: React.ChangeEvent<HTMLSelectElement>) => {
+                      const value = event.target.value;
                       if (value === 'auto') {
                         void handleTableTargetChange(t.name, { mode: 'auto' });
                       } else {
@@ -1675,7 +1717,6 @@ async function onSyncFields() {
                         void handleTableTargetChange(t.name, { mode: 'existing', tableId: value, tableName });
                       }
                     }}
-                    style={{ width: '220px', maxWidth: '100%' }}
                     title="目标数据表：默认自动创建，也可绑定既有表。"
                   >
                     <option value="auto">自动创建新表（默认）</option>
@@ -1683,7 +1724,7 @@ async function onSyncFields() {
                       <option key={id} value={id}>{name}</option>
                     ))}
                   </select>
-                  <span className="muted" style={{ fontSize: '0.75rem' }}>
+                  <span className="muted target-row__hint">
                     {targetConfig.mode === 'existing' ? `写入：${targetLabel}` : `新建：${targetLabel}`}
                   </span>
                 </div>
@@ -1692,8 +1733,8 @@ async function onSyncFields() {
           ) : (
             <span className="muted" style={{ fontSize: '0.78rem' }}>暂无解析中的表，请先解析数据或选择示例。</span>
           )}
-          <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
-            <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', cursor: 'pointer' }}>
+          <div className="scope-controls">
+            <label className="muted scope-controls__option">
               <input
                 type="radio"
                 name="field_write_scope"
@@ -1703,7 +1744,7 @@ async function onSyncFields() {
               />
               仅勾选字段
             </label>
-            <label className="muted" style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.78rem', cursor: 'pointer' }}>
+            <label className="muted scope-controls__option">
               <input
                 type="radio"
                 name="field_write_scope"
@@ -1713,28 +1754,23 @@ async function onSyncFields() {
               />
               所有字段
             </label>
-            <span className="muted" style={{ fontSize: '0.72rem' }} title="仅勾选字段：按照字段面板勾选项写入；所有字段：忽略勾选状态写入全部字段。">
+            <span className="muted scope-controls__hint" title="仅勾选字段：按照字段面板勾选项写入；所有字段：忽略勾选状态写入全部字段。">
               字段范围
             </span>
           </div>
           {targetSummary.length ? (
-            <div className="muted" style={{ fontSize: '0.75rem', display: 'flex', flexWrap: 'wrap', gap: '0.4rem' }}>
+            <div className="target-summary">
               {targetSummary.map((item) => (
                 <span
                   key={`${item.source}-${item.target}`}
-                  style={{
-                    padding: '4px 8px',
-                    borderRadius: 6,
-                    background: item.mode === 'existing' ? 'rgba(22,119,255,0.12)' : 'rgba(82,196,26,0.12)',
-                    border: item.mode === 'existing' ? '1px solid rgba(22,119,255,0.2)' : '1px solid rgba(82,196,26,0.25)',
-                  }}
+                  className={`target-summary__pill target-summary__pill--${item.mode}`}
                 >
                   {item.source} → {item.target}{item.mode === 'auto' ? '（待创建）' : ''}
                 </span>
               ))}
             </div>
           ) : null}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem', alignItems: 'center' }}>
+          <div className="action-row">
             <button
               className="btn btn-primary"
               style={{ minWidth: '200px' }}
@@ -1767,7 +1803,7 @@ async function onSyncFields() {
         </div>
       </section>
 
-      <section style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+      <section className="step-section">
         <StepHeader step="04" title="任务反馈" hint="查看最新结果与历史日志。" />
         <div
           className="card"
