@@ -103,6 +103,75 @@ function groupFieldsByPrefix(fields: any[], customGroups?: Array<{ groupName: st
   return groups;
 }
 
+function resolveOriginalIndex(field: any, original: any[]): number {
+  const candidates = [
+    (field as any).__originalIndex,
+    (field as any)._originalIndex,
+    (field as any).__index,
+    (field as any)._index,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return candidate;
+    }
+  }
+  const idx = original.indexOf(field);
+  return idx >= 0 ? idx : Number.MAX_SAFE_INTEGER;
+}
+
+function getModifiedTimestamp(field: any): number | null {
+  const candidates = [
+    (field as any).__modifiedAt,
+    (field as any).__modifiedTime,
+    (field as any).modifiedAt,
+    (field as any).modifiedTime,
+    (field as any).updateTime,
+    (field as any).updatedAt,
+    (field as any).updated_time,
+    (field as any).lastModified,
+    (field as any).last_modified,
+  ];
+  for (const candidate of candidates) {
+    if (candidate == null) continue;
+    if (typeof candidate === 'number' && !Number.isNaN(candidate)) {
+      const normalized = candidate > 1e12 ? candidate : candidate * 1000;
+      if (normalized > 0) return normalized;
+      continue;
+    }
+    if (typeof candidate === 'string') {
+      const parsed = Date.parse(candidate);
+      if (!Number.isNaN(parsed)) return parsed;
+    }
+  }
+  return null;
+}
+
+function sortFieldsByMode(fields: any[], mode: 'structure' | 'recent', original: any[]): any[] {
+  const sorted = [...fields];
+  if (mode === 'structure') {
+    sorted.sort((a, b) => resolveOriginalIndex(a, original) - resolveOriginalIndex(b, original));
+    return sorted;
+  }
+  sorted.sort((a, b) => {
+    const aTime = getModifiedTimestamp(a);
+    const bTime = getModifiedTimestamp(b);
+    if (aTime !== null && bTime !== null && aTime !== bTime) {
+      return bTime - aTime;
+    }
+    if (aTime !== null && bTime === null) return -1;
+    if (aTime === null && bTime !== null) return 1;
+    return resolveOriginalIndex(a, original) - resolveOriginalIndex(b, original);
+  });
+  return sorted;
+}
+
+function formatModifiedTime(timestamp: number): string {
+  if (!Number.isFinite(timestamp)) return '';
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString();
+}
+
 // 缩短字段名显示
 function shortenFieldName(fullName: string): string {
   const dotIndex = fullName.lastIndexOf('.');
@@ -129,6 +198,7 @@ export default function Preview({
   const onlySuggested = false;
   const groupingEnabled = true;
   const [selectedTypes, setSelectedTypes] = React.useState<string[]>([]);
+  const [sortMode, setSortMode] = React.useState<'structure' | 'recent'>('structure');
   function highlight(text: string, q: string){
     if (!q) return text;
     try {
@@ -245,33 +315,56 @@ export default function Preview({
               </div>
               {/* 搜索、筛选与批量操作 */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0 0.75rem 0.5rem 0.75rem' }}>
-                <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <input className="input" placeholder="搜索字段名…" value={query} onChange={(e)=>setQuery(e.target.value)} style={{ maxWidth: '100%', width: '280px', minWidth: '200px' }} />
-                  <button className="btn" onClick={()=>{
-                    const visible = (t.fields || []).filter((f:any)=>!SYSTEM_TYPES.has(f.type));
-                    const filtered = visible.filter((f:any)=>{
-                      if (onlySuggested && !((f as any).suggestedTypes && (f as any).suggestedTypes.length)) return false;
-                      if (selectedTypes.length > 0 && !selectedTypes.includes(f.type)) return false;
-                      return !query || String(f.name).toLowerCase().includes(query.toLowerCase()) || String((f as any).label||'').toLowerCase().includes(query.toLowerCase());
-                    });
-                    filtered.forEach((f:any, i:number)=>{
-                      const idxField = t.fields.indexOf(f);
-                      onFieldToggle && onFieldToggle(idx, idxField, true);
-                    });
-                  }}>全选可见</button>
-                  <button className="btn" onClick={()=>{
-                    const visible = (t.fields || []).filter((f:any)=>!SYSTEM_TYPES.has(f.type));
-                    const filtered = visible.filter((f:any)=>{
-                      if (onlySuggested && !((f as any).suggestedTypes && (f as any).suggestedTypes.length)) return false;
-                      if (selectedTypes.length > 0 && !selectedTypes.includes(f.type)) return false;
-                      return !query || String(f.name).toLowerCase().includes(query.toLowerCase()) || String((f as any).label||'').toLowerCase().includes(query.toLowerCase());
-                    });
-                    filtered.forEach((f:any)=>{
-                      const idxField = t.fields.indexOf(f);
-                      const enabled = (f as any).__enabled ?? true;
-                      onFieldToggle && onFieldToggle(idx, idxField, !enabled);
-                    });
-                  }}>反选可见</button>
+                <div className="field-toolbar-row" style={{ width: '100%' }}>
+                  <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <input className="input" placeholder="搜索字段名…" value={query} onChange={(e)=>setQuery(e.target.value)} style={{ maxWidth: '100%', width: '280px', minWidth: '200px' }} />
+                    <button type="button" className="btn" onClick={()=>{
+                      const visible = (t.fields || []).filter((f:any)=>!SYSTEM_TYPES.has(f.type));
+                      const filtered = visible.filter((f:any)=>{
+                        if (onlySuggested && !((f as any).suggestedTypes && (f as any).suggestedTypes.length)) return false;
+                        if (selectedTypes.length > 0 && !selectedTypes.includes(f.type)) return false;
+                        return !query || String(f.name).toLowerCase().includes(query.toLowerCase()) || String((f as any).label||'').toLowerCase().includes(query.toLowerCase());
+                      });
+                      filtered.forEach((f:any, i:number)=>{
+                        const idxField = t.fields.indexOf(f);
+                        onFieldToggle && onFieldToggle(idx, idxField, true);
+                      });
+                    }}>全选可见</button>
+                    <button type="button" className="btn" onClick={()=>{
+                      const visible = (t.fields || []).filter((f:any)=>!SYSTEM_TYPES.has(f.type));
+                      const filtered = visible.filter((f:any)=>{
+                        if (onlySuggested && !((f as any).suggestedTypes && (f as any).suggestedTypes.length)) return false;
+                        if (selectedTypes.length > 0 && !selectedTypes.includes(f.type)) return false;
+                        return !query || String(f.name).toLowerCase().includes(query.toLowerCase()) || String((f as any).label||'').toLowerCase().includes(query.toLowerCase());
+                      });
+                      filtered.forEach((f:any)=>{
+                        const idxField = t.fields.indexOf(f);
+                        const enabled = (f as any).__enabled ?? true;
+                        onFieldToggle && onFieldToggle(idx, idxField, !enabled);
+                      });
+                    }}>反选可见</button>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', marginLeft: 'auto' }}>
+                    <span className="muted" style={{ fontSize: 12 }}>排序：</span>
+                    <div className="field-sort-toggle" role="group" aria-label="字段排序方式">
+                      <button
+                        type="button"
+                        className={`field-sort-option${sortMode === 'structure' ? ' is-active' : ''}`}
+                        onClick={() => setSortMode('structure')}
+                        aria-pressed={sortMode === 'structure'}
+                      >
+                        表结构
+                      </button>
+                      <button
+                        type="button"
+                        className={`field-sort-option${sortMode === 'recent' ? ' is-active' : ''}`}
+                        onClick={() => setSortMode('recent')}
+                        aria-pressed={sortMode === 'recent'}
+                      >
+                        最近修改
+                      </button>
+                    </div>
+                  </div>
                 </div>
                 {/* 类型筛选标签 */}
                 {(() => {
@@ -336,12 +429,14 @@ export default function Preview({
                   {/* 数据行 - 支持分组和展开 */}
                   {(() => {
                   // 获取过滤后的字段列表
-                  let filteredFields = (t.fields || []).filter((f:any)=>!SYSTEM_TYPES.has(f.type))
+                  const filteredFields = (t.fields || []).filter((f:any)=>!SYSTEM_TYPES.has(f.type))
                     .filter((f:any)=>{
                       if (onlySuggested && !((f as any).suggestedTypes && (f as any).suggestedTypes.length)) return false;
                       if (selectedTypes.length > 0 && !selectedTypes.includes(f.type)) return false;
                       return !query || String(f.name).toLowerCase().includes(query.toLowerCase()) || String((f as any).label||'').toLowerCase().includes(query.toLowerCase());
                     });
+
+                  const sortedFields = sortFieldsByMode(filteredFields, sortMode, t.fields || []);
 
                   // 渲染单行的函数
                   const renderFieldRow = (f: any, fieldIndex: number, globalIndex: number) => {
@@ -364,6 +459,8 @@ export default function Preview({
                       }
                       return typeof fieldValue === 'object' && fieldValue !== null ? JSON.stringify(fieldValue, null, 2) : String(fieldValue ?? '');
                     })();
+                    const modifiedTimestamp = getModifiedTimestamp(f);
+                    const modifiedLabel = modifiedTimestamp ? formatModifiedTime(modifiedTimestamp) : '';
 
                         return (
                       <div key={globalIndex} className="table-row">
@@ -400,6 +497,14 @@ export default function Preview({
                                 {Math.round((f as any).presenceRate * 100)}%
                               </span>
                             )}
+                            {sortMode === 'recent' && modifiedLabel && (
+                              <span
+                                className="field-meta-updated"
+                                title={`最近修改：${modifiedLabel}`}
+                              >
+                                最近修改：{modifiedLabel}
+                              </span>
+                            )}
                           </div>
                         </div>
                         <div className="table-cell">
@@ -431,7 +536,7 @@ export default function Preview({
 
                   // 如果启用分组
                   if (groupingEnabled) {
-                    const groups = groupFieldsByPrefix(filteredFields);
+                    const groups = groupFieldsByPrefix(sortedFields);
                     const groupKeys = Object.keys(groups).sort();
                     let globalIndex = 0;
 
@@ -462,7 +567,7 @@ export default function Preview({
                     // 不分组，直接渲染
                     return (
                       <div>
-                        {filteredFields.map((f: any, i) => {
+                        {sortedFields.map((f: any, i) => {
                           const fieldIndex = t.fields.indexOf(f);
                           return renderFieldRow(f, fieldIndex, i);
                         })}

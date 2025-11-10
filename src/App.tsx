@@ -434,7 +434,7 @@ export default function App() {
     return (inputTables || []).map(table => {
       if (!table) return table;
       const fields = Array.isArray(table.fields) ? table.fields : [];
-      const normalizedFields = fields.map((field: any) => {
+      const normalizedFields = fields.map((field: any, fieldIndex: number) => {
         if (!field) return field;
         const initialLabelValue =
           (field as any).__initialLabel ??
@@ -455,10 +455,18 @@ export default function App() {
           typeof currentLabelValue === 'string'
             ? currentLabelValue
             : String(currentLabelValue ?? '');
+        const resolvedOriginalIndex = (() => {
+          const candidate = (field as any).__originalIndex;
+          if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+            return candidate;
+          }
+          return fieldIndex;
+        })();
         return {
           ...field,
           label: normalizedLabel,
           __initialLabel: normalizedInitial,
+          __originalIndex: resolvedOriginalIndex,
         };
       });
       return { ...table, fields: normalizedFields };
@@ -1324,6 +1332,11 @@ async function onSyncFields() {
     setPreviewManualToggle(false);
   }, [applyText, isMockData, persistTableTargets]);
 
+  const scrollToTop = React.useCallback(() => {
+    if (typeof window === 'undefined') return;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
   const resolvedTargetNameMap = React.useMemo(() => {
     const used = new Set<string>();
     Object.values(tableNames || {}).forEach(name => {
@@ -1794,6 +1807,38 @@ async function onSyncFields() {
       {lastDataChangeAt && (
         <div className="muted" style={{ fontSize: '0.8rem' }}>最近数据更新：{new Date(lastDataChangeAt).toLocaleTimeString()}</div>
       )}
+      {tables.length > 0 ? (
+        <aside
+          className="floating-clear-bubble"
+          role="complementary"
+          aria-label="一键清理解析结果"
+        >
+          <div className="floating-clear-header">
+            <span className="floating-clear-title">一键清理</span>
+            <span className="floating-clear-count">
+              已解析 {recordSummary.tables} 张表
+            </span>
+          </div>
+          <p className="floating-clear-description">
+            重置输入内容、字段勾选与目标表配置，快速回到初始状态。
+          </p>
+          <div className="floating-clear-summary">
+            <span>样本记录：{recordSummary.records}</span>
+            <button
+              type="button"
+              className="floating-clear-secondary"
+              onClick={scrollToTop}
+            >
+              返回顶部
+            </button>
+          </div>
+          <div className="floating-clear-actions">
+            <button type="button" className="btn btn-danger" onClick={handleClearInput}>
+              一键清理
+            </button>
+          </div>
+        </aside>
+      ) : null}
     </div>
   );
 
